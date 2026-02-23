@@ -35,6 +35,8 @@ def _classify_error(error: BaseException) -> str | None:
         return "orphaned_tools"
     if "connection was closed" in msg or "connection reset" in msg or "broken pipe" in msg:
         return "connection_closed"
+    if "ssl" in msg and ("eof occurred" in msg or "validation failed" in msg):
+        return "connection_closed"
     # Bedrock cross-region inference profiles can return "model identifier
     # is invalid" for oversized payloads or transient issues. Try compact first.
     if "model identifier is invalid" in msg:
