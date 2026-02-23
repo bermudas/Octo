@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -58,9 +59,16 @@ def _parse_frontmatter_fallback(raw: str) -> dict[str, str]:
     return meta
 
 
-def _parse_agent_md(path: Path) -> AgentConfig | None:
-    """Parse a single AGENT.md file with YAML frontmatter."""
-    text = path.read_text(encoding="utf-8")
+def _parse_agent_md_text(text: str, fallback_name: str = "agent") -> AgentConfig | None:
+    """Parse AGENT.md text content with YAML frontmatter.
+
+    Pure text parser — no filesystem access. Used by both filesystem and
+    storage-based loaders.
+
+    Args:
+        text: Full AGENT.md file content.
+        fallback_name: Name to use if not specified in frontmatter.
+    """
     if not text.startswith("---"):
         return None
 
@@ -78,7 +86,7 @@ def _parse_agent_md(path: Path) -> AgentConfig | None:
     if not meta:
         return None
 
-    name = meta.get("name", path.stem)
+    name = meta.get("name", fallback_name)
     description = meta.get("description", "")
     # Clean up description — take only first sentence/paragraph for routing
     if len(description) > 200:
@@ -102,10 +110,6 @@ def _parse_agent_md(path: Path) -> AgentConfig | None:
         model = ""
 
     color = meta.get("color", "cyan")
-
-    # Derive source project from parent path
-    source = path.parent.parent.parent.name  # .claude/agents/x.md → project dir
-
     agent_type = meta.get("type", "")
 
     return AgentConfig(
@@ -116,16 +120,32 @@ def _parse_agent_md(path: Path) -> AgentConfig | None:
         model=model,
         type=agent_type,
         color=color,
-        source_project=source,
     )
 
 
-def load_agents() -> list[AgentConfig]:
-    """Scan all agent directories and return AgentConfig list."""
+def _parse_agent_md(path: Path) -> AgentConfig | None:
+    """Parse a single AGENT.md file from filesystem."""
+    text = path.read_text(encoding="utf-8")
+    cfg = _parse_agent_md_text(text, fallback_name=path.stem)
+    if cfg is not None:
+        # Derive source project from parent path
+        cfg.source_project = path.parent.parent.parent.name  # .claude/agents/x.md → project dir
+    return cfg
+
+
+def load_agents(agent_dirs: list[Path] | None = None) -> list[AgentConfig]:
+    """Scan all agent directories and return AgentConfig list.
+
+    Args:
+        agent_dirs: Directories to scan for AGENT.md files.
+            Defaults to AGENT_DIRS from octo.config (CLI mode).
+    """
+    if agent_dirs is None:
+        agent_dirs = AGENT_DIRS
     agents: list[AgentConfig] = []
     seen_names: set[str] = set()
 
-    for agent_dir in AGENT_DIRS:
+    for agent_dir in agent_dirs:
         if not agent_dir.is_dir():
             continue
         for md_file in sorted(agent_dir.glob("*.md")):
@@ -137,18 +157,24 @@ def load_agents() -> list[AgentConfig]:
     return agents
 
 
-def load_octo_agents() -> list[AgentConfig]:
+def load_octo_agents(agents_dir: Path | None = None) -> list[AgentConfig]:
     """Scan .octo/agents/*/AGENT.md and return AgentConfig list.
 
     These are Octo-native agents (e.g. deep_research type) configured
     directly in the workspace, not loaded from external projects.
+
+    Args:
+        agents_dir: Directory containing agent subdirectories.
+            Defaults to AGENTS_DIR from octo.config (CLI mode).
     """
+    if agents_dir is None:
+        agents_dir = AGENTS_DIR
     agents: list[AgentConfig] = []
 
-    if not AGENTS_DIR.is_dir():
+    if not agents_dir.is_dir():
         return agents
 
-    for agent_dir in sorted(AGENTS_DIR.iterdir()):
+    for agent_dir in sorted(agents_dir.iterdir()):
         agent_file = agent_dir / "AGENT.md"
         if not agent_file.is_file():
             continue
@@ -156,5 +182,64 @@ def load_octo_agents() -> list[AgentConfig]:
         if cfg:
             cfg.source_project = "octo"
             agents.append(cfg)
+
+    return agents
+
+
+# ---------------------------------------------------------------------------
+# Async storage-based loading (for OctoEngine / S3 / Artifacts)
+# ---------------------------------------------------------------------------
+
+import logging
+
+_log = logging.getLogger(__name__)
+
+
+async def load_agents_from_storage(storage: Any, prefix: str = "agents") -> list[AgentConfig]:
+    """Load AGENT.md files from a StorageBackend (S3, filesystem, etc.).
+
+    Expects layout:
+        {prefix}/
+            qa-engineer/AGENT.md
+            test-architect/AGENT.md
+
+    Each subdirectory under {prefix}/ should contain an AGENT.md file.
+
+    Args:
+        storage: A StorageBackend instance (S3Storage, FilesystemStorage, etc.).
+        prefix: Storage path prefix for agent directories. Default "agents".
+
+    Returns:
+        List of AgentConfig objects parsed from storage.
+    """
+    agents: list[AgentConfig] = []
+    seen_names: set[str] = set()
+
+    try:
+        entries = await storage.list_dir(prefix)
+    except (FileNotFoundError, Exception) as e:
+        _log.debug("No agents found at '%s': %s", prefix, e)
+        return agents
+
+    for entry in sorted(entries):
+        # entry might be "qa-engineer/" or "qa-engineer"
+        dir_name = entry.rstrip("/")
+        if not dir_name:
+            continue
+
+        agent_path = f"{prefix}/{dir_name}/AGENT.md"
+        try:
+            text = await storage.read(agent_path)
+        except FileNotFoundError:
+            continue
+
+        cfg = _parse_agent_md_text(text, fallback_name=dir_name)
+        if cfg and cfg.name not in seen_names:
+            cfg.source_project = "storage"
+            seen_names.add(cfg.name)
+            agents.append(cfg)
+
+    if agents:
+        _log.info("Loaded %d agent(s) from storage prefix '%s'", len(agents), prefix)
 
     return agents

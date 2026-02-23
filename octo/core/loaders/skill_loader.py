@@ -6,6 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -57,9 +58,16 @@ def _catalog_subdir(skill_dir: Path, subdir_name: str) -> list[str]:
     )
 
 
-def _parse_skill_md(path: Path) -> SkillConfig | None:
-    """Parse a single SKILL.md with YAML frontmatter."""
-    text = path.read_text(encoding="utf-8")
+def _parse_skill_md_text(text: str, fallback_name: str = "skill") -> SkillConfig | None:
+    """Parse SKILL.md text content with YAML frontmatter.
+
+    Pure text parser — no filesystem access. Used by both filesystem and
+    storage-based loaders.
+
+    Args:
+        text: Full SKILL.md file content.
+        fallback_name: Name to use if not specified in frontmatter.
+    """
     if not text.startswith("---"):
         return None
 
@@ -72,7 +80,7 @@ def _parse_skill_md(path: Path) -> SkillConfig | None:
     except yaml.YAMLError:
         return None
 
-    name = meta.get("name", path.parent.name)
+    name = meta.get("name", fallback_name)
     description = meta.get("description", "")
     body = parts[2].strip()
 
@@ -80,8 +88,6 @@ def _parse_skill_md(path: Path) -> SkillConfig | None:
     model_invocation = meta.get("model-invocation", True)
     if isinstance(model_invocation, str):
         model_invocation = model_invocation.lower() not in ("false", "no", "0")
-
-    skill_dir = path.parent.resolve()
 
     return SkillConfig(
         name=name,
@@ -94,10 +100,19 @@ def _parse_skill_md(path: Path) -> SkillConfig | None:
         dependencies=meta.get("dependencies", {}),
         requires=meta.get("requires", []),
         permissions=meta.get("permissions", {}),
-        skill_dir=skill_dir,
-        references=_catalog_subdir(skill_dir, "references"),
-        scripts=_catalog_subdir(skill_dir, "scripts"),
     )
+
+
+def _parse_skill_md(path: Path) -> SkillConfig | None:
+    """Parse a single SKILL.md file from filesystem."""
+    text = path.read_text(encoding="utf-8")
+    cfg = _parse_skill_md_text(text, fallback_name=path.parent.name)
+    if cfg is not None:
+        skill_dir = path.parent.resolve()
+        cfg.skill_dir = skill_dir
+        cfg.references = _catalog_subdir(skill_dir, "references")
+        cfg.scripts = _catalog_subdir(skill_dir, "scripts")
+    return cfg
 
 
 def _scan_skills_dir(
@@ -121,19 +136,32 @@ def _scan_skills_dir(
     return results
 
 
-def load_skills() -> list[SkillConfig]:
-    """Scan .octo/skills/ and external skill dirs (skills.sh ecosystem).
+def load_skills(
+    skills_dir: Path | None = None,
+    external_dirs: list[Path] | None = None,
+) -> list[SkillConfig]:
+    """Scan skills directory and external skill dirs (skills.sh ecosystem).
 
-    Priority: .octo/skills/ wins over external dirs. Within external dirs,
+    Priority: skills_dir wins over external dirs. Within external dirs,
     first-found wins (so .agents/skills/ beats .claude/skills/).
+
+    Args:
+        skills_dir: Primary skills directory. Defaults to SKILLS_DIR from
+            octo.config (CLI mode).
+        external_dirs: Additional skill directories to scan. Defaults to
+            EXTERNAL_SKILLS_DIRS from octo.config (CLI mode).
     """
+    if skills_dir is None:
+        skills_dir = SKILLS_DIR
+    if external_dirs is None:
+        external_dirs = EXTERNAL_SKILLS_DIRS
     seen: set[str] = set()
 
     # Primary: Octo-native skills
-    skills = _scan_skills_dir(SKILLS_DIR, seen)
+    skills = _scan_skills_dir(skills_dir, seen)
 
     # External: skills.sh / Agent Skills ecosystem directories
-    for ext_dir in EXTERNAL_SKILLS_DIRS:
+    for ext_dir in external_dirs:
         found = _scan_skills_dir(ext_dir, seen, source="skills.sh")
         if found:
             log.info("Loaded %d skill(s) from %s", len(found), ext_dir)
@@ -193,3 +221,59 @@ def verify_skills_deps(skills: list[SkillConfig]) -> dict[str, list[str]]:
                 " ".join(_pip_name(s) for s in missing),
             )
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Async storage-based loading (for OctoEngine / S3 / Artifacts)
+# ---------------------------------------------------------------------------
+
+async def load_skills_from_storage(storage: Any, prefix: str = "skills") -> list[SkillConfig]:
+    """Load SKILL.md files from a StorageBackend (S3, filesystem, etc.).
+
+    Expects layout:
+        {prefix}/
+            test-generation/SKILL.md
+            artifacts-management/SKILL.md
+
+    Each subdirectory under {prefix}/ should contain a SKILL.md file.
+    Note: references/ and scripts/ subdirectories are not supported for
+    storage-based skills (no local filesystem path).
+
+    Args:
+        storage: A StorageBackend instance (S3Storage, FilesystemStorage, etc.).
+        prefix: Storage path prefix for skill directories. Default "skills".
+
+    Returns:
+        List of SkillConfig objects parsed from storage.
+    """
+    skills: list[SkillConfig] = []
+    seen_names: set[str] = set()
+
+    try:
+        entries = await storage.list_dir(prefix)
+    except (FileNotFoundError, Exception) as e:
+        log.debug("No skills found at '%s': %s", prefix, e)
+        return skills
+
+    for entry in sorted(entries):
+        # entry might be "test-generation/" or "test-generation"
+        dir_name = entry.rstrip("/")
+        if not dir_name:
+            continue
+
+        skill_path = f"{prefix}/{dir_name}/SKILL.md"
+        try:
+            text = await storage.read(skill_path)
+        except FileNotFoundError:
+            continue
+
+        cfg = _parse_skill_md_text(text, fallback_name=dir_name)
+        if cfg and cfg.name not in seen_names:
+            cfg.source = "storage"
+            seen_names.add(cfg.name)
+            skills.append(cfg)
+
+    if skills:
+        log.info("Loaded %d skill(s) from storage prefix '%s'", len(skills), prefix)
+
+    return skills

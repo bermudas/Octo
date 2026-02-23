@@ -102,15 +102,22 @@ def _build_model_config(config: Any) -> dict:
 
 
 async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
-    """Internal build implementation."""
-    import octo.config as legacy_config
+    """Internal build implementation.
 
-    # Configure middleware thresholds on legacy config
-    # (these are simple int values, safe to override)
-    legacy_config.TOOL_RESULT_LIMIT = config.tool_result_limit
-    legacy_config.SUPERVISOR_MSG_CHAR_LIMIT = config.supervisor_msg_char_limit
-    legacy_config.SUMMARIZATION_TRIGGER_TOKENS = config.summarization_trigger_tokens
-    legacy_config.SUMMARIZATION_KEEP_TOKENS = config.summarization_keep_tokens
+    Passes all configuration as parameters to build_graph() instead of
+    mutating module-level globals. This makes engine builds safe for
+    multi-tenant environments (multiple engines in the same process).
+    """
+    # Build model config dict (provider, credentials, model names)
+    model_config = _build_model_config(config)
+
+    # Build context limits dict (no more global mutation!)
+    context_limits = {
+        "tool_result_limit": config.tool_result_limit,
+        "supervisor_msg_char_limit": config.supervisor_msg_char_limit,
+        "summarization_trigger_tokens": config.summarization_trigger_tokens,
+        "summarization_keep_tokens": config.summarization_keep_tokens,
+    }
 
     # Build checkpointer
     from octo.core.checkpointing import make_checkpointer
@@ -122,13 +129,35 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
     if mcp_tools:
         mcp_tools_by_server["preloaded"] = mcp_tools
 
-    # Import and call the existing build_graph, passing our checkpointer
+    # Resolve agent and skill configs from OctoConfig.
+    # Priority: explicit config > storage-based loading > None (fallback to CLI mode)
+    agent_configs = config.agent_configs if config.agent_configs else None
+    skill_configs = config.skill_configs if config.skill_configs else None
+
+    # If no pre-loaded configs but storage is available, load from storage (S3/filesystem)
+    if agent_configs is None and config.storage is not None:
+        from octo.core.loaders.agent_loader import load_agents_from_storage
+        agent_configs = await load_agents_from_storage(config.storage, prefix="agents")
+        if not agent_configs:
+            agent_configs = None  # Let build_graph fall back to CLI mode
+
+    if skill_configs is None and config.storage is not None:
+        from octo.core.loaders.skill_loader import load_skills_from_storage
+        skill_configs = await load_skills_from_storage(config.storage, prefix="skills")
+        if not skill_configs:
+            skill_configs = None  # Let build_graph fall back to CLI mode
+
+    # Import and call build_graph with full config injection (no globals needed)
     from octo.core.graph import build_graph
     app_tuple = await build_graph(
         mcp_tools=mcp_tools,
         mcp_tools_by_server=mcp_tools_by_server,
         checkpointer=checkpointer,
         storage=config.storage,
+        model_config=model_config,
+        context_limits=context_limits,
+        agent_configs=agent_configs,
+        skill_configs=skill_configs,
     )
     app = app_tuple[0]
 

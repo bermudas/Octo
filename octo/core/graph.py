@@ -71,12 +71,19 @@ def _get_context_limit(model_name: str) -> int:
     return 200_000
 
 
-def _compute_tool_result_limit(model_name: str) -> int:
+def _compute_tool_result_limit(model_name: str, *, override: int | None = None) -> int:
     """Proportional tool result limit: min(context_chars * 0.15, 40_000).
 
     If the user explicitly set TOOL_RESULT_LIMIT in .env, that value is
     used instead (backward-compatible override).
+
+    Args:
+        model_name: Model name for context limit detection.
+        override: Explicit limit from context_limits config. Takes precedence
+            over env var and proportional calculation.
     """
+    if override is not None:
+        return override
     import os
     if os.getenv("TOOL_RESULT_LIMIT"):
         from octo.config import TOOL_RESULT_LIMIT
@@ -86,7 +93,13 @@ def _compute_tool_result_limit(model_name: str) -> int:
     return min(int(context_limit * 4 * 0.15), 40_000)
 
 
-def _build_pre_model_hook(model_name: str, tool_count: int = 0):
+def _build_pre_model_hook(
+    model_name: str,
+    tool_count: int = 0,
+    *,
+    model_config: dict | None = None,
+    supervisor_msg_char_limit: int | None = None,
+):
     """Build a pre_model_hook that tracks context and auto-trims when needed.
 
     Two-stage protection against context overflow:
@@ -104,6 +117,9 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
         tool_count: Number of tools bound to the supervisor. Used to estimate
             tool schema token overhead (schemas are sent separately in
             Bedrock Converse API but still count toward context).
+        model_config: Optional model config dict for provider detection.
+        supervisor_msg_char_limit: Optional override for max message chars.
+            When provided, overrides the SUPERVISOR_MSG_CHAR_LIMIT global.
     """
     import logging
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -112,12 +128,12 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
 
     _log = logging.getLogger("octo.graph")
     context_info["limit"] = _get_context_limit(model_name)
-    _provider = _detect_provider(model_name)
+    _provider = _detect_provider(model_name, config=model_config)
 
     _TRIM_THRESHOLD = 0.70   # start trimming at 70% usage
     _KEEP_RATIO = 0.40       # keep the newest 40% of messages
     _MIN_KEEP = 6            # never keep fewer than 6 messages
-    _MAX_MSG_CHARS = SUPERVISOR_MSG_CHAR_LIMIT
+    _MAX_MSG_CHARS = supervisor_msg_char_limit if supervisor_msg_char_limit is not None else SUPERVISOR_MSG_CHAR_LIMIT
 
     # Tool schemas are sent separately in the API request but still consume
     # context tokens.  Each tool schema averages ~800 tokens (name, description,
@@ -250,11 +266,15 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
         return result
 
     def _stamp_date(msgs):
-        """Prepend current date/time to the last HumanMessage.
+        """Prepend current date/time and request metadata to the last HumanMessage.
 
         Injected into llm_input_messages (what the LLM sees), not stored state.
         Placed in the last message because it's always new — doesn't invalidate
         prompt caching (breakpoint 1 = system prompt, breakpoint 2 = convo prefix).
+
+        When request_metadata is available (via configurable), also injects
+        user/product identity. This enables the LLM to address users by name
+        and know which product it's operating on.
         """
         if not msgs:
             return msgs
@@ -264,13 +284,41 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
         date_note = (
             f"[Current: {now.strftime('%A, %B %d, %Y')} | "
             f"UTC {now.strftime('%H:%M')} | "
-            f"Local {local_now.strftime('%H:%M')}]\n\n"
+            f"Local {local_now.strftime('%H:%M')}]"
         )
-        # Find last HumanMessage and prepend date
+
+        # Read request metadata from RunnableConfig (set by engine.invoke())
+        meta_parts: list[str] = []
+        try:
+            from langchain_core.runnables.config import ensure_config
+            cfg = ensure_config()
+            req_meta = cfg.get("configurable", {}).get("request_metadata", {})
+            if req_meta:
+                user_name = req_meta.get("user_name", "")
+                product_name = req_meta.get("product_name", "")
+                product_id = req_meta.get("product_id", "")
+                if user_name or product_name:
+                    parts = []
+                    if user_name:
+                        parts.append(f"User: {user_name}")
+                    if product_name:
+                        pid_short = product_id[:8] if product_id else ""
+                        parts.append(f"Product: {product_name}" + (f" ({pid_short}...)" if pid_short else ""))
+                    meta_parts.append("[" + " | ".join(parts) + "]")
+        except Exception:
+            pass  # Metadata injection is optional — never break the hook
+
+        # Combine date + metadata into prefix
+        prefix = date_note
+        if meta_parts:
+            prefix += "\n" + "\n".join(meta_parts)
+        prefix += "\n\n"
+
+        # Find last HumanMessage and prepend
         for i in range(len(msgs) - 1, -1, -1):
             if isinstance(msgs[i], HumanMessage) and isinstance(msgs[i].content, str):
                 msgs[i] = msgs[i].model_copy(update={
-                    "content": date_note + msgs[i].content,
+                    "content": prefix + msgs[i].content,
                 })
                 break
         return msgs
@@ -334,7 +382,7 @@ def _agent_tier(name: str) -> str:
     return profile.get("worker_default", "low")
 
 
-def _resolve_agent_model(cfg_model: str, fallback_tier: str):
+def _resolve_agent_model(cfg_model: str, fallback_tier: str, *, model_config: dict | None = None):
     """Resolve an agent's model from its AGENT.md `model:` field.
 
     If the value is a tier alias (high, low, default, inherit, or empty),
@@ -343,7 +391,7 @@ def _resolve_agent_model(cfg_model: str, fallback_tier: str):
     """
     if cfg_model in _TIER_ALIASES:
         effective_tier = cfg_model if cfg_model in ("high", "low") else fallback_tier
-        return make_model(tier=effective_tier)
+        return make_model(tier=effective_tier, config=model_config)
 
     # Sanity check: model names should contain dots, dashes, or slashes
     # (e.g. "claude-sonnet-4-5", "eu.anthropic.claude-...", "gpt-4o")
@@ -355,7 +403,7 @@ def _resolve_agent_model(cfg_model: str, fallback_tier: str):
             "'eu.anthropic.claude-sonnet-4-5-v1').",
             cfg_model,
         )
-    return make_model(cfg_model, tier=fallback_tier)
+    return make_model(cfg_model, tier=fallback_tier, config=model_config)
 
 
 def _caching_middleware():
@@ -378,7 +426,12 @@ def _caching_middleware():
     return anthropic_cache, bedrock_cache
 
 
-def _build_project_agents(project_agents: list[AgentConfig]) -> list:
+def _build_project_agents(
+    project_agents: list[AgentConfig],
+    *,
+    model_config: dict | None = None,
+    context_limits: dict | None = None,
+) -> list:
     """Create one LangGraph worker per project in the registry.
 
     Each project worker wraps `claude_code` for that project.  The supervisor
@@ -392,6 +445,8 @@ def _build_project_agents(project_agents: list[AgentConfig]) -> list:
     from octo.tools.claude_code import claude_code
 
     from octo.models import resolve_model_name
+
+    _cl = context_limits or {}
 
     error_middleware = ToolErrorMiddleware()
     summarization_middleware = build_summarization_middleware()
@@ -441,8 +496,11 @@ def _build_project_agents(project_agents: list[AgentConfig]) -> list:
         )
 
         tier = _agent_tier(proj.name)
-        model = make_model(tier=tier)
-        worker_limit = _compute_tool_result_limit(resolve_model_name(tier=tier))
+        model = make_model(tier=tier, config=model_config)
+        worker_limit = _compute_tool_result_limit(
+            resolve_model_name(tier=tier, config=model_config),
+            override=_cl.get("tool_result_limit"),
+        )
         result_limit_mw = ToolResultLimitMiddleware(max_chars=worker_limit)
 
         agent = create_agent(
@@ -476,6 +534,9 @@ call `task_complete` with what you found so far.
 def _build_worker_agents(
     agent_configs: list[AgentConfig],
     mcp_tools: list,
+    *,
+    model_config: dict | None = None,
+    context_limits: dict | None = None,
 ) -> list:
     """Create standard agents from AGENT.md configs using create_agent.
 
@@ -483,6 +544,8 @@ def _build_worker_agents(
     """
     # Shared middleware (result_limit is per-worker due to proportional caps)
     from octo.models import resolve_model_name
+
+    _cl = context_limits or {}
 
     error_middleware = ToolErrorMiddleware()
     summarization_middleware = build_summarization_middleware()
@@ -499,8 +562,11 @@ def _build_worker_agents(
             continue
 
         tier = _agent_tier(cfg.name)
-        model = _resolve_agent_model(cfg.model, tier)
-        worker_limit = _compute_tool_result_limit(resolve_model_name(tier=tier))
+        model = _resolve_agent_model(cfg.model, tier, model_config=model_config)
+        worker_limit = _compute_tool_result_limit(
+            resolve_model_name(tier=tier, config=model_config),
+            override=_cl.get("tool_result_limit"),
+        )
         result_limit_mw = ToolResultLimitMiddleware(max_chars=worker_limit)
 
         if cfg.tools:
@@ -548,6 +614,8 @@ def _build_worker_agents(
 def _build_deep_agents(
     agent_configs: list[AgentConfig],
     mcp_tools: list,
+    *,
+    model_config: dict | None = None,
 ) -> list:
     """Create deep research agents using deepagents' create_deep_agent.
 
@@ -584,7 +652,7 @@ def _build_deep_agents(
         if cfg.type != "deep_research":
             continue
 
-        model = _resolve_agent_model(cfg.model, "default")
+        model = _resolve_agent_model(cfg.model, "default", model_config=model_config)
 
         # Resolve MCP tools from agent's tools: list, or provide proxy
         if cfg.tools:
@@ -1011,6 +1079,11 @@ async def build_graph(
     mcp_tools_by_server: dict[str, list] | None = None,
     checkpointer: Any = None,
     storage: Any = None,
+    *,
+    model_config: dict | None = None,
+    context_limits: dict | None = None,
+    agent_configs: list | None = None,
+    skill_configs: list | None = None,
 ) -> Any:
     """Build and compile the full Octi supervisor graph.
 
@@ -1021,6 +1094,16 @@ async def build_graph(
             a default AsyncSqliteSaver using DB_PATH.
         storage: Optional StorageBackend instance. When provided, memory
             and planning tools use it instead of hardcoded filesystem paths.
+        model_config: Optional dict for make_model() — provider, credentials,
+            model names. When provided, bypasses module-level globals.
+            Used by OctoEngine for multi-tenant safety.
+        context_limits: Optional dict with keys: tool_result_limit,
+            supervisor_msg_char_limit, summarization_trigger_tokens,
+            summarization_keep_tokens. When provided, overrides globals.
+        agent_configs: Pre-loaded list of AgentConfig objects. When provided,
+            skips filesystem-based agent loading.
+        skill_configs: Pre-loaded list of SkillConfig objects. When provided,
+            skips filesystem-based skill loading.
 
     Returns:
         Tuple of (compiled app, all agent configs, skills).
@@ -1028,11 +1111,23 @@ async def build_graph(
     mcp_tools = mcp_tools or []
     _register_mcp_tools(mcp_tools_by_server or {})
 
-    # Load agents from both sources
-    project_agents = load_agents()   # for display + project worker prompts
-    octo_agents = load_octo_agents() # become LangGraph workers directly
+    # Load agents — use pre-loaded configs if provided (engine mode),
+    # otherwise scan filesystem (CLI mode).
+    if agent_configs is not None:
+        # Engine mode: agents provided by OctoConfig (loaded from S3/filesystem)
+        project_agents = []
+        octo_agents = agent_configs
+    else:
+        # CLI mode: load from filesystem using globals
+        project_agents = load_agents()
+        octo_agents = load_octo_agents()
     all_agents = project_agents + octo_agents
-    skills = load_skills()
+
+    # Load skills — use pre-loaded configs if provided (engine mode)
+    if skill_configs is not None:
+        skills = skill_configs
+    else:
+        skills = load_skills()
     verify_skills_deps(skills)  # warn about missing Python deps at startup
 
     # Build use_skill tool — closes over the loaded skills list
@@ -1089,7 +1184,11 @@ async def build_graph(
     # 3. Deep agents — deep research agents with persistent workspaces
     import shutil
     if shutil.which("claude"):
-        project_workers = _build_project_agents(project_agents)
+        project_workers = _build_project_agents(
+            project_agents,
+            model_config=model_config,
+            context_limits=context_limits,
+        )
     else:
         project_workers = []
         if project_agents:
@@ -1098,12 +1197,22 @@ async def build_graph(
                 "Claude Code CLI not found — project workers disabled. "
                 "Install: npm install -g @anthropic-ai/claude-code"
             )
-    octo_workers = _build_worker_agents(octo_agents, mcp_tools)
-    deep_workers = _build_deep_agents(octo_agents, mcp_tools)
+    octo_workers = _build_worker_agents(
+        octo_agents, mcp_tools,
+        model_config=model_config,
+        context_limits=context_limits,
+    )
+    deep_workers = _build_deep_agents(
+        octo_agents, mcp_tools,
+        model_config=model_config,
+    )
 
     # Supervisor — no longer needs claude_code directly (project workers handle it)
     profile = get_profile_tiers()
-    supervisor_model = make_model(tier=profile.get("supervisor", "default"))
+    supervisor_model = make_model(
+        tier=profile.get("supervisor", "default"),
+        config=model_config,
+    )
     prompt = _build_supervisor_prompt(skills, octo_agents=octo_agents)
 
     # Build schedule_task tool (cron scheduling)
@@ -1126,7 +1235,11 @@ async def build_graph(
 
     # Proportional limit for supervisor tools (adapts to model context window)
     from octo.models import resolve_model_name
-    _sup_tool_limit = _compute_tool_result_limit(resolve_model_name())
+    _cl = context_limits or {}
+    _sup_tool_limit = _compute_tool_result_limit(
+        resolve_model_name(config=model_config),
+        override=_cl.get("tool_result_limit"),
+    )
 
     class TruncatingToolNode(ToolNode):
         """ToolNode that truncates oversized results before they enter state."""
@@ -1204,8 +1317,8 @@ async def build_graph(
     from octo.models import resolve_model_name, _detect_provider
     _model_issues = []
     for tier_label, tier_val in [("supervisor/default", "default"), ("high", "high"), ("low", "low")]:
-        name = resolve_model_name(tier=tier_val)
-        provider = _detect_provider(name)
+        name = resolve_model_name(tier=tier_val, config=model_config)
+        provider = _detect_provider(name, config=model_config)
         if provider == "bedrock" and not any(c in name for c in ".:"):
             _model_issues.append(f"  {tier_label}: '{name}' — missing region prefix or version suffix for Bedrock")
         elif not name:
@@ -1233,7 +1346,12 @@ async def build_graph(
     )
 
     total_tools = len(supervisor_tool_list) + len(handoff_tools)
-    hook = _build_pre_model_hook(resolve_model_name(), tool_count=total_tools)
+    hook = _build_pre_model_hook(
+        resolve_model_name(config=model_config),
+        tool_count=total_tools,
+        model_config=model_config,
+        supervisor_msg_char_limit=_cl.get("supervisor_msg_char_limit"),
+    )
 
     workflow = create_supervisor(
         agents=all_workers,

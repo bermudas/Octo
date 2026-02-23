@@ -17,13 +17,13 @@ Usage::
     response = await engine.invoke("Hello!", thread_id="conv-123")
 
 Thread Safety:
-    OctoEngine is NOT thread-safe. Each OctoEngine instance mutates global
-    module state during _ensure_built() (see _builder.py). Do NOT share
-    engine instances across threads, and do NOT create multiple engines
-    with different configs in the same process simultaneously.
+    OctoEngine build (_ensure_built) is NOT safe for concurrent execution.
+    Use an asyncio.Lock to serialize builds. Once built, invoke() and
+    stream() are safe for concurrent calls with different thread_ids.
 
-    For multi-tenant scenarios, use one engine per process/worker,
-    or wait for the builder refactor that eliminates global state mutation.
+    For multi-tenant scenarios (e.g. web server), use one engine per
+    product/tenant with a shared asyncio.Lock for builds. All per-request
+    context (user identity, page state) is passed via the metadata param.
 """
 from __future__ import annotations
 
@@ -96,6 +96,7 @@ class OctoEngine:
         *,
         thread_id: str = "default",
         user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> OctoResponse:
         """Process one message. Loads checkpoint, runs graph, saves checkpoint.
 
@@ -103,6 +104,11 @@ class OctoEngine:
             message: The user's message text.
             thread_id: Conversation identifier (maps to checkpoint thread).
             user_id: Optional user identifier for multi-user scenarios.
+            metadata: Optional per-request metadata injected into the LLM
+                context via pre_model_hook (not stored in checkpoint).
+                Supported keys: user_name, user_id, product_id, product_name.
+                These are prepended to the last HumanMessage as late context
+                (preserves prompt caching).
 
         Returns:
             OctoResponse with the assistant's reply.
@@ -121,7 +127,9 @@ class OctoEngine:
         try:
             from langchain_core.messages import HumanMessage
 
-            config = {"configurable": {"thread_id": thread_id}}
+            config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+            if metadata:
+                config["configurable"]["request_metadata"] = metadata
             input_data = {"messages": [HumanMessage(content=message)]}
 
             result = await self._app.ainvoke(input_data, config=config)
@@ -155,17 +163,25 @@ class OctoEngine:
         message: str,
         *,
         thread_id: str = "default",
+        metadata: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict]:
         """Stream response events.
 
         Yields dicts with event data (tokens, tool calls, agent switches).
         Raises OctoEngineError if the graph fails to build.
+
+        Args:
+            message: The user's message text.
+            thread_id: Conversation identifier (maps to checkpoint thread).
+            metadata: Optional per-request metadata (same as invoke()).
         """
         await self._ensure_built()
 
         from langchain_core.messages import HumanMessage
 
-        config = {"configurable": {"thread_id": thread_id}}
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+        if metadata:
+            config["configurable"]["request_metadata"] = metadata
         input_data = {"messages": [HumanMessage(content=message)]}
 
         async for event in self._app.astream_events(input_data, config=config, version="v2"):

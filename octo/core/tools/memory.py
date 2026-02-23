@@ -26,16 +26,51 @@ if TYPE_CHECKING:
 # Factory: create tools backed by a StorageBackend (engine mode)
 # ---------------------------------------------------------------------------
 
-def make_memory_tools(storage: StorageBackend) -> list:
+def _resolve_memory_prefix(base_prefix: str) -> str:
+    """Resolve the memory path prefix, incorporating per-user isolation if available.
+
+    When request_metadata contains a user_id, memory paths are scoped to
+    ``users/{user_id}/`` for per-user isolation. Otherwise, uses the base prefix.
+
+    Args:
+        base_prefix: Default prefix (e.g. "" or "shared/").
+
+    Returns:
+        Resolved prefix like "users/abc123/" or the base_prefix.
+    """
+    try:
+        from langchain_core.runnables.config import ensure_config
+        cfg = ensure_config()
+        req_meta = cfg.get("configurable", {}).get("request_metadata", {})
+        user_id = req_meta.get("user_id", "")
+        if user_id:
+            return f"users/{user_id}/"
+    except Exception:
+        pass
+    return base_prefix
+
+
+def make_memory_tools(storage: StorageBackend, *, memory_prefix: str = "") -> list:
     """Create memory tools that use the given storage backend.
 
-    Returns a list of LangChain tools: [write_memory, read_memories,
-    update_long_term_memory].
+    When used with OctoEngine, per-user memory isolation is automatic:
+    the tools read ``user_id`` from the current request's metadata
+    (set via ``engine.invoke(metadata={"user_id": ...})``) and scope
+    all paths to ``users/{user_id}/``.
+
+    Args:
+        storage: StorageBackend instance (S3, filesystem, etc.).
+        memory_prefix: Default path prefix for memory files. Overridden
+            by per-request user_id when available.
+
+    Returns:
+        List of LangChain tools: [write_memory, read_memories,
+        update_long_term_memory].
     """
 
     @tool
     async def write_memory(content: str) -> str:
-        """Append an entry to today's daily memory file (.octo/memory/YYYY-MM-DD.md).
+        """Append an entry to today's daily memory file.
 
         Use this whenever you learn something worth remembering:
         - User preferences or facts ("remember this")
@@ -48,8 +83,9 @@ def make_memory_tools(storage: StorageBackend) -> list:
         Args:
             content: The memory entry to record (one line or a few lines).
         """
+        prefix = _resolve_memory_prefix(memory_prefix)
         today = date.today().isoformat()
-        path = f"memory/{today}.md"
+        path = f"{prefix}memory/{today}.md"
         now = datetime.now(timezone.utc).strftime("%H:%M")
 
         if await storage.exists(path):
@@ -71,12 +107,13 @@ def make_memory_tools(storage: StorageBackend) -> list:
         Args:
             days: Number of days to look back (default 3).
         """
+        prefix = _resolve_memory_prefix(memory_prefix)
         today = date.today()
         entries = []
 
         for i in range(1, days + 1):
             d = today - timedelta(days=i)
-            path = f"memory/{d.isoformat()}.md"
+            path = f"{prefix}memory/{d.isoformat()}.md"
             if await storage.exists(path):
                 text = await storage.read(path)
                 entries.append(text.strip())
@@ -87,7 +124,7 @@ def make_memory_tools(storage: StorageBackend) -> list:
 
     @tool
     async def update_long_term_memory(content: str) -> str:
-        """Replace the long-term memory file (.octo/persona/MEMORY.md).
+        """Replace the long-term memory file (MEMORY.md).
 
         This is your curated, persistent memory — distilled insights, not raw logs.
         Call this to update what you remember about the user, yourself, projects,
@@ -99,7 +136,8 @@ def make_memory_tools(storage: StorageBackend) -> list:
         Args:
             content: The complete new content for MEMORY.md.
         """
-        await storage.write("persona/MEMORY.md", content + "\n")
+        prefix = _resolve_memory_prefix(memory_prefix)
+        await storage.write(f"{prefix}MEMORY.md", content + "\n")
         lines = content.strip().split("\n")
         return f"MEMORY.md updated ({len(lines)} lines)"
 
