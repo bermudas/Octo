@@ -54,7 +54,12 @@ async def _make_sqlite_checkpointer(config: Any) -> Any:
 
 
 async def _make_postgres_checkpointer(config: Any) -> Any:
-    """Create a PostgreSQL checkpointer."""
+    """Create a PostgreSQL checkpointer.
+
+    NOTE: ``AsyncPostgresSaver.from_conn_string()`` returns an async context
+    manager, **not** a checkpointer directly.  We must open the connection
+    ourselves and pass it to the constructor.
+    """
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     except ImportError:
@@ -63,12 +68,29 @@ async def _make_postgres_checkpointer(config: Any) -> Any:
             "Install with: pip install octo-agent[postgres]"
         )
 
+    try:
+        from psycopg import AsyncConnection
+    except ImportError:
+        raise ImportError(
+            "PostgreSQL checkpointing requires psycopg. "
+            "Install with: pip install psycopg[binary]"
+        )
+
     dsn = config.checkpoint_config.get("dsn", "")
     if not dsn:
         raise ValueError(
             "PostgreSQL checkpointer requires 'dsn' in checkpoint_config"
         )
 
-    checkpointer = AsyncPostgresSaver.from_conn_string(dsn)
+    # Convert asyncpg DSN to psycopg format if needed
+    # (asyncpg uses postgresql+asyncpg://, psycopg needs postgresql://)
+    pg_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
+
+    conn = await AsyncConnection.connect(
+        pg_dsn,
+        autocommit=True,
+        prepare_threshold=0,
+    )
+    checkpointer = AsyncPostgresSaver(conn)
     await checkpointer.setup()
     return checkpointer

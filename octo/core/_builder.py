@@ -147,6 +147,15 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
         if not skill_configs:
             skill_configs = None  # Let build_graph fall back to CLI mode
 
+    # Resolve persona files from OctoConfig.
+    # Priority: explicit config > storage-based loading > None (fallback to CLI mode)
+    persona_files = config.persona_files if config.persona_files else None
+    if persona_files is None and config.storage is not None:
+        from octo.core.loaders.persona_loader import load_persona_from_storage
+        persona_files = await load_persona_from_storage(config.storage, prefix="persona")
+        if not persona_files:
+            persona_files = None  # Let build_graph fall back to CLI mode
+
     # Import and call build_graph with full config injection (no globals needed)
     from octo.core.graph import build_graph
     app_tuple = await build_graph(
@@ -158,6 +167,7 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
         context_limits=context_limits,
         agent_configs=agent_configs,
         skill_configs=skill_configs,
+        persona_files=persona_files,
     )
     app = app_tuple[0]
 

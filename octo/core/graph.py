@@ -672,9 +672,19 @@ def _build_deep_agents(
     return deep_workers
 
 
-def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None = None) -> str:
-    """Compose the full supervisor system prompt."""
-    base = build_system_prompt()
+def _build_supervisor_prompt(
+    skills: list,
+    octo_agents: list[AgentConfig] | None = None,
+    persona_files: dict[str, str] | None = None,
+) -> str:
+    """Compose the full supervisor system prompt.
+
+    Both CLI and engine modes share the same ``build_system_prompt()``
+    from ``octo/context.py``.  When ``persona_files`` is provided (engine
+    mode), the function reads from the dict; otherwise it reads from the
+    local ``.octo/persona/`` filesystem (CLI mode).
+    """
+    base = build_system_prompt(persona_files=persona_files)
     parts = [base]
 
     # Only show LLM-invocable skills in the prompt
@@ -1084,6 +1094,7 @@ async def build_graph(
     context_limits: dict | None = None,
     agent_configs: list | None = None,
     skill_configs: list | None = None,
+    persona_files: dict[str, str] | None = None,
 ) -> Any:
     """Build and compile the full Octi supervisor graph.
 
@@ -1104,6 +1115,10 @@ async def build_graph(
             skips filesystem-based agent loading.
         skill_configs: Pre-loaded list of SkillConfig objects. When provided,
             skips filesystem-based skill loading.
+        persona_files: Optional dict mapping filename to content. When provided,
+            builds the supervisor system prompt from these files instead of
+            reading from the local filesystem.  Used by OctoEngine for
+            storage-based (S3) persona loading.
 
     Returns:
         Tuple of (compiled app, all agent configs, skills).
@@ -1213,7 +1228,7 @@ async def build_graph(
         tier=profile.get("supervisor", "default"),
         config=model_config,
     )
-    prompt = _build_supervisor_prompt(skills, octo_agents=octo_agents)
+    prompt = _build_supervisor_prompt(skills, octo_agents=octo_agents, persona_files=persona_files)
 
     # Build schedule_task tool (cron scheduling)
     from octo.heartbeat import make_schedule_task_tool, make_manage_scheduled_tasks_tool

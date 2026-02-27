@@ -97,6 +97,7 @@ class OctoEngine:
         thread_id: str = "default",
         user_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        recursion_limit: int | None = None,
     ) -> OctoResponse:
         """Process one message. Loads checkpoint, runs graph, saves checkpoint.
 
@@ -109,6 +110,8 @@ class OctoEngine:
                 Supported keys: user_name, user_id, product_id, product_name.
                 These are prepended to the last HumanMessage as late context
                 (preserves prompt caching).
+            recursion_limit: Maximum number of LangGraph steps per invocation.
+                Defaults to LangGraph's built-in default (25) if not specified.
 
         Returns:
             OctoResponse with the assistant's reply.
@@ -130,6 +133,8 @@ class OctoEngine:
             config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
             if metadata:
                 config["configurable"]["request_metadata"] = metadata
+            if recursion_limit:
+                config["recursion_limit"] = recursion_limit
             input_data = {"messages": [HumanMessage(content=message)]}
 
             result = await self._app.ainvoke(input_data, config=config)
@@ -164,6 +169,7 @@ class OctoEngine:
         *,
         thread_id: str = "default",
         metadata: dict[str, Any] | None = None,
+        recursion_limit: int | None = None,
     ) -> AsyncIterator[dict]:
         """Stream response events.
 
@@ -174,6 +180,8 @@ class OctoEngine:
             message: The user's message text.
             thread_id: Conversation identifier (maps to checkpoint thread).
             metadata: Optional per-request metadata (same as invoke()).
+            recursion_limit: Maximum number of LangGraph steps per invocation.
+                Defaults to LangGraph's built-in default (25) if not specified.
         """
         await self._ensure_built()
 
@@ -182,6 +190,8 @@ class OctoEngine:
         config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
         if metadata:
             config["configurable"]["request_metadata"] = metadata
+        if recursion_limit:
+            config["recursion_limit"] = recursion_limit
         input_data = {"messages": [HumanMessage(content=message)]}
 
         async for event in self._app.astream_events(input_data, config=config, version="v2"):
