@@ -41,9 +41,7 @@ from octo.core.tools.mcp_proxy import (
     get_mcp_tool, set_session_pool,
     get_mcp_server_summaries,
 )
-from octo.core.tools.telegram_tools import (
-    send_file, set_telegram_transport,
-)
+from octo.core.tools.telegram_tools import set_telegram_transport
 
 
 # --- Context window tracking ----------------------------------------------
@@ -676,6 +674,7 @@ def _build_supervisor_prompt(
     skills: list,
     octo_agents: list[AgentConfig] | None = None,
     persona_files: dict[str, str] | None = None,
+    engine_mode: bool = False,
 ) -> str:
     """Compose the full supervisor system prompt.
 
@@ -794,49 +793,51 @@ def _build_supervisor_prompt(
         "- The user asks to pause or switch context"
     )
 
-    parts.append(
-        "## File Sharing\n\n"
-        "Use `send_file` to send files to the user via Telegram. This is much better "
-        "than pasting long content inline. Use it when:\n"
-        "- The user asks for a research report, analysis, or document\n"
-        "- An agent has produced a file (research workspace: `.octo/workspace/<date>/`)\n"
-        "- The content is too long to include in a message\n\n"
-        "If Telegram is not available, the tool returns the local file path instead."
-    )
+    # CLI-only capabilities (not available in engine/server mode)
+    if not engine_mode:
+        parts.append(
+            "## File Sharing\n\n"
+            "Use `send_file` to send files to the user via Telegram. This is much better "
+            "than pasting long content inline. Use it when:\n"
+            "- The user asks for a research report, analysis, or document\n"
+            "- An agent has produced a file (research workspace: `.octo/workspace/<date>/`)\n"
+            "- The content is too long to include in a message\n\n"
+            "If Telegram is not available, the tool returns the local file path instead."
+        )
 
-    parts.append(
-        "## Task Scheduling\n\n"
-        "You can schedule tasks to run later using `schedule_task`. Use this when:\n"
-        "- The user says 'remind me in X hours/minutes'\n"
-        "- The user wants periodic checks ('check every morning')\n"
-        "- A task should run at a specific time\n\n"
-        "Schedule types:\n"
-        "- `at`: One-shot. Spec examples: 'in 2h', '15:00', '2024-02-11T15:00Z'\n"
-        "- `every`: Recurring interval. Spec examples: '30m', '2h', '1d'\n"
-        "- `cron`: Cron expression. Spec examples: '0 9 * * MON-FRI'\n\n"
-        "Set `isolated=True` for tasks that don't need conversation context.\n"
-        "Results are delivered to the user via Telegram and CLI.\n\n"
-        "Use `manage_scheduled_tasks` to list, cancel, pause, or resume scheduled tasks:\n"
-        "- `action='list'` — show all scheduled tasks with their IDs and status\n"
-        "- `action='cancel', job_id='<id>'` — permanently remove a scheduled task\n"
-        "- `action='pause', job_id='<id>'` — temporarily pause a task\n"
-        "- `action='resume', job_id='<id>'` — resume a paused task"
-    )
+        parts.append(
+            "## Task Scheduling\n\n"
+            "You can schedule tasks to run later using `schedule_task`. Use this when:\n"
+            "- The user says 'remind me in X hours/minutes'\n"
+            "- The user wants periodic checks ('check every morning')\n"
+            "- A task should run at a specific time\n\n"
+            "Schedule types:\n"
+            "- `at`: One-shot. Spec examples: 'in 2h', '15:00', '2024-02-11T15:00Z'\n"
+            "- `every`: Recurring interval. Spec examples: '30m', '2h', '1d'\n"
+            "- `cron`: Cron expression. Spec examples: '0 9 * * MON-FRI'\n\n"
+            "Set `isolated=True` for tasks that don't need conversation context.\n"
+            "Results are delivered to the user via Telegram and CLI.\n\n"
+            "Use `manage_scheduled_tasks` to list, cancel, pause, or resume scheduled tasks:\n"
+            "- `action='list'` — show all scheduled tasks with their IDs and status\n"
+            "- `action='cancel', job_id='<id>'` — permanently remove a scheduled task\n"
+            "- `action='pause', job_id='<id>'` — temporarily pause a task\n"
+            "- `action='resume', job_id='<id>'` — resume a paused task"
+        )
 
-    parts.append(
-        "## Background Tasks\n\n"
-        "For long-running tasks (>2 minutes), use `dispatch_background` to run them "
-        "independently. The user can continue chatting while the task runs.\n\n"
-        "Two modes:\n"
-        "- **process**: Subprocess (e.g., `claude -p 'analyze the codebase'`, shell commands). "
-        "Done when the process exits.\n"
-        "- **agent**: Standalone LangGraph agent with tools. Can call `task_complete` when done "
-        "or `escalate_question` to ask the user something.\n\n"
-        "The user is notified automatically when a task completes. They can check status "
-        "with `/tasks` and view details with `/task <id>`.\n\n"
-        "Use background tasks when the user asks for large analysis, code generation, "
-        "research, or anything that would take several minutes."
-    )
+        parts.append(
+            "## Background Tasks\n\n"
+            "For long-running tasks (>2 minutes), use `dispatch_background` to run them "
+            "independently. The user can continue chatting while the task runs.\n\n"
+            "Two modes:\n"
+            "- **process**: Subprocess (e.g., `claude -p 'analyze the codebase'`, shell commands). "
+            "Done when the process exits.\n"
+            "- **agent**: Standalone LangGraph agent with tools. Can call `task_complete` when done "
+            "or `escalate_question` to ask the user something.\n\n"
+            "The user is notified automatically when a task completes. They can check status "
+            "with `/tasks` and view details with `/task <id>`.\n\n"
+            "Use background tasks when the user asks for large analysis, code generation, "
+            "research, or anything that would take several minutes."
+        )
 
     # Project workers
     if PROJECTS:
@@ -1095,6 +1096,7 @@ async def build_graph(
     agent_configs: list | None = None,
     skill_configs: list | None = None,
     persona_files: dict[str, str] | None = None,
+    engine_mode: bool = False,
 ) -> Any:
     """Build and compile the full Octi supervisor graph.
 
@@ -1119,6 +1121,9 @@ async def build_graph(
             builds the supervisor system prompt from these files instead of
             reading from the local filesystem.  Used by OctoEngine for
             storage-based (S3) persona loading.
+        engine_mode: When True, excludes CLI-only tools (schedule_task,
+            dispatch_background, send_file) that require a persistent
+            process. Used by OctoEngine in server/gateway mode.
 
     Returns:
         Tuple of (compiled app, all agent configs, skills).
@@ -1228,16 +1233,23 @@ async def build_graph(
         tier=profile.get("supervisor", "default"),
         config=model_config,
     )
-    prompt = _build_supervisor_prompt(skills, octo_agents=octo_agents, persona_files=persona_files)
+    prompt = _build_supervisor_prompt(
+        skills, octo_agents=octo_agents, persona_files=persona_files,
+        engine_mode=engine_mode,
+    )
 
-    # Build schedule_task tool (cron scheduling)
-    from octo.heartbeat import make_schedule_task_tool, make_manage_scheduled_tasks_tool
-    schedule_task = make_schedule_task_tool()
-    manage_scheduled_tasks = make_manage_scheduled_tasks_tool()
+    # CLI-only tools (require persistent process — not available in engine/server mode)
+    _cli_only_tools: list = []
+    if not engine_mode:
+        from octo.heartbeat import make_schedule_task_tool, make_manage_scheduled_tasks_tool
+        _cli_only_tools.append(make_schedule_task_tool())
+        _cli_only_tools.append(make_manage_scheduled_tasks_tool())
 
-    # Build dispatch_background tool (background workers)
-    from octo.background import make_dispatch_background_tool
-    dispatch_background = make_dispatch_background_tool()
+        from octo.background import make_dispatch_background_tool
+        _cli_only_tools.append(make_dispatch_background_tool())
+
+        from octo.core.tools.telegram_tools import send_file
+        _cli_only_tools.append(send_file)
 
     # Wrap supervisor tools in a TruncatingToolNode that:
     # 1. handle_tool_errors=True — MCP errors returned as messages, not crashes
@@ -1323,7 +1335,7 @@ async def build_graph(
         list(BUILTIN_TOOLS)
         + [find_tools, call_mcp_tool]
         + _plan_tools + [use_skill] + _mem_tools
-        + [schedule_task, manage_scheduled_tasks, send_file, dispatch_background]
+        + _cli_only_tools
     )
 
     # --- Model healthcheck at startup -----------------------------------------

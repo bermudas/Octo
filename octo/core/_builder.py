@@ -168,6 +168,7 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
         agent_configs=agent_configs,
         skill_configs=skill_configs,
         persona_files=persona_files,
+        engine_mode=True,
     )
     app = app_tuple[0]
 
