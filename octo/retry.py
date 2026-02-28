@@ -562,6 +562,15 @@ async def invoke_with_retry(
     last_error: BaseException | None = None
     empty_retries = 0
 
+    # Find the CLI callback in config so we can suppress error panels
+    # during retries (the callback shows scary panels that confuse users
+    # into thinking no retry is happening).
+    _cli_cb = None
+    for cb in config.get("callbacks", []):
+        if hasattr(cb, "suppress_errors"):
+            _cli_cb = cb
+            break
+
     for attempt in range(_MAX_RETRIES + 1):
         try:
             result = await app.ainvoke(input_data, config=config)
@@ -584,6 +593,10 @@ async def invoke_with_retry(
                 else:
                     logger.warning("Empty response persists after %d retries", empty_retries)
 
+            # Success — clear suppress flag
+            if _cli_cb:
+                _cli_cb.suppress_errors = False
+
             # Post-invocation: trim old tool results + proactive compact
             await _post_invoke_maintenance(app, config)
 
@@ -591,6 +604,11 @@ async def invoke_with_retry(
         except Exception as e:
             category = _classify_error(e)
             last_error = e
+
+            # Suppress error panels in the callback for retryable errors —
+            # the next ainvoke() will clear the flag on success.
+            if category and attempt < _MAX_RETRIES and _cli_cb:
+                _cli_cb.suppress_errors = True
 
             if category == "orphaned_tools":
                 # Repair checkpoint and retry once — don't count as a retry attempt
@@ -693,9 +711,13 @@ async def invoke_with_retry(
                 await asyncio.sleep(delay)
                 continue
 
-            # Unknown error or retries exhausted
+            # Unknown error or retries exhausted — clear suppress flag
+            if _cli_cb:
+                _cli_cb.suppress_errors = False
             raise
 
     # Should not reach here, but just in case
+    if _cli_cb:
+        _cli_cb.suppress_errors = False
     if last_error:
         raise last_error

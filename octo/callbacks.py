@@ -71,6 +71,9 @@ class OctiCallbackHandler(BaseCallbackHandler):
         # External status spinner (set by chat loop, stopped on first tool call)
         self.status = None
 
+        # Suppress error panels during retries (set by invoke_with_retry)
+        self.suppress_errors: bool = False
+
     def _stop_status(self):
         """Stop the external status spinner if set."""
         if self.status is not None:
@@ -414,6 +417,10 @@ class OctiCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """User-friendly LLM error display with hints."""
+        # During retries, suppress the error panel — the retry logic
+        # shows its own status updates via the spinner.
+        if self.suppress_errors:
+            return
         error_str = str(error)
         user_message = None
         hint = None
