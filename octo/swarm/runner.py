@@ -141,8 +141,10 @@ class SwarmRunner:
         async with httpx.AsyncClient(timeout=5.0) as client:
             for peer in peers:
                 try:
-                    # Derive health URL from MCP URL
-                    health_url = peer.url.rsplit("/", 1)[0] + "/health"
+                    # Derive health URL from MCP URL (e.g. http://host:9100/mcp/ → http://host:9100/health)
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(peer.url)
+                    health_url = urlunparse((parsed.scheme, parsed.netloc, "/health", "", "", ""))
                     resp = await client.get(health_url)
                     if resp.status_code == 200:
                         peer.status = "online"
