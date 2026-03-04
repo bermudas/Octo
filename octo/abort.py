@@ -41,7 +41,7 @@ async def _esc_listener_unix(abort_event: asyncio.Event) -> AsyncIterator[None]:
     old_settings = termios.tcgetattr(fd)
 
     try:
-        tty.setraw(fd)
+        tty.setcbreak(fd)
         loop = asyncio.get_running_loop()
 
         async def _reader() -> None:

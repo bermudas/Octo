@@ -881,6 +881,7 @@ async def _chat_loop(
             except Exception as e:
                 logger.debug("Auto-handoff failed: %s", e)
 
+        _last_ctrl_c = 0.0
         try:
             while True:
                 user_input = await ui.styled_input_async()
@@ -1984,6 +1985,7 @@ async def _chat_loop(
                     status.start()
                     cli_callback.status = status
 
+                    invoke_task = None
                     try:
                         from octo.abort import esc_listener
                         from octo.retry import invoke_with_retry
@@ -2014,14 +2016,21 @@ async def _chat_loop(
                                 if abort_event.is_set():
                                     invoke_task.cancel()
                                     try:
-                                        await invoke_task
-                                    except asyncio.CancelledError:
+                                        await asyncio.wait_for(invoke_task, timeout=5.0)
+                                    except (asyncio.CancelledError, asyncio.TimeoutError):
                                         pass
                                     result = None
                                 else:
                                     abort_waiter.cancel()
                                     result = invoke_task.result()
                     finally:
+                        # Cancel invoke_task if still running (e.g. on KeyboardInterrupt)
+                        if invoke_task is not None and not invoke_task.done():
+                            invoke_task.cancel()
+                            try:
+                                await asyncio.wait_for(invoke_task, timeout=3.0)
+                            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                                pass
                         # Ensure spinner is stopped
                         try:
                             status.stop()
@@ -2045,7 +2054,13 @@ async def _chat_loop(
                                 await voice_mod.speak(response_text)
 
                 except KeyboardInterrupt:
-                    ui.print_info("\nInterrupted. Type 'exit' to quit.")
+                    import time as _time
+                    _now = _time.monotonic()
+                    if _now - _last_ctrl_c < 2.0:
+                        ui.print_info("\nForce quit.")
+                        break
+                    _last_ctrl_c = _now
+                    ui.print_info("\nInterrupted. Press Ctrl+C again to quit.")
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str or "timed out" in error_str:
