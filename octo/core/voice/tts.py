@@ -52,14 +52,15 @@ _LANG_DEFAULTS = {
     "Sohee": "Korean",
 }
 
-# ── Generation defaults (deterministic for voice consistency) ────────
+# ── Generation defaults (sampling for natural sound, fixed seed for consistency)
 _GEN_KWARGS = {
-    "do_sample": False,
-    "temperature": 0.5,
+    "do_sample": True,
+    "temperature": 0.7,
     "top_p": 0.9,
-    "top_k": 10,
+    "top_k": 30,
     "repetition_penalty": 1.1,
 }
+_VOICE_SEED = int(os.environ.get("VOICE_SEED", "42"))
 
 
 # ── Model loading ────────────────────────────────────────────────────
@@ -161,7 +162,13 @@ def _synthesize_sync(
     instruct: str | None = None,
 ) -> bytes:
     """Run TTS inference synchronously. Returns WAV bytes."""
+    import torch
     import soundfile as sf
+
+    # Fixed seed for voice consistency across chunks
+    torch.manual_seed(_VOICE_SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(_VOICE_SEED)
 
     model = _get_model()
 
