@@ -53,4 +53,38 @@ async def send_file(file_path: str, caption: str = "") -> str:
     return f"Failed to send file to Telegram. The file exists at: {file_path}"
 
 
-TELEGRAM_TOOLS = [send_file]
+@tool
+async def send_voice(file_path: str, caption: str = "") -> str:
+    """Send an audio file as a Telegram voice message (playable inline).
+
+    Use this instead of send_file when delivering audio content (TTS output,
+    voice recordings, etc.) — it appears as a playable voice bubble in Telegram
+    rather than a file attachment.
+
+    The file should be OGG/OPUS format for best compatibility.
+    WAV/MP3 files will be sent but may not play inline on all clients.
+
+    Args:
+        file_path: Path to the audio file (absolute or relative to workspace).
+        caption: Short description shown with the voice message.
+    """
+    import os
+    from octo.config import WORKSPACE
+
+    if not os.path.isabs(file_path):
+        file_path = str(WORKSPACE / file_path)
+
+    if not os.path.isfile(file_path):
+        return f"File not found: {file_path}"
+
+    if _telegram_transport is None:
+        return "Telegram transport not available. The file exists at: " + file_path
+
+    sent = await _telegram_transport.send_voice(file_path, caption=caption)
+    if sent:
+        filename = os.path.basename(file_path)
+        return f"Voice message '{filename}' sent to Telegram successfully."
+    return f"Failed to send voice to Telegram. The file exists at: {file_path}"
+
+
+TELEGRAM_TOOLS = [send_file, send_voice]

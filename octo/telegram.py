@@ -1143,6 +1143,37 @@ class TelegramTransport:
             logger.exception("Failed to send document %s to Telegram", file_path)
             return False
 
+    async def send_voice(self, file_path: str, caption: str = "", chat_id: int | None = None) -> bool:
+        """Send an audio file as a Telegram voice message (playable inline).
+
+        Args:
+            file_path: Absolute path to an OGG/OPUS audio file.
+            caption: Optional caption (max 1024 chars, HTML supported).
+            chat_id: Target chat. Defaults to TELEGRAM_OWNER_ID.
+
+        Returns:
+            True if sent successfully, False otherwise.
+        """
+        if not self._app:
+            return False
+        target = chat_id or (int(TELEGRAM_OWNER_ID) if TELEGRAM_OWNER_ID else None)
+        if not target:
+            return False
+
+        try:
+            with open(file_path, "rb") as f:
+                html_caption = _markdown_to_telegram_html(caption)[:1024] if caption else None
+                await self._app.bot.send_voice(
+                    chat_id=target,
+                    voice=f,
+                    caption=html_caption,
+                    parse_mode="HTML" if html_caption else None,
+                )
+            return True
+        except Exception:
+            logger.exception("Failed to send voice %s to Telegram", file_path)
+            return False
+
     async def start(self) -> None:
         """Start the Telegram bot (non-blocking)."""
         if not TELEGRAM_BOT_TOKEN:
