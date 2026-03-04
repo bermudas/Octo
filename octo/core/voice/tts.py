@@ -147,12 +147,12 @@ def _detect_language(text: str) -> str:
 def _estimate_max_tokens(text: str) -> int:
     """Estimate max_new_tokens to prevent runaway generation.
 
-    Qwen3-TTS 12Hz produces ~12 audio tokens per second of speech.
-    Average speaking rate: ~4 chars/sec (Russian/Chinese) to ~12 chars/sec (English).
-    We use a conservative ~3 chars/sec → ~4 tokens/char, with 3x safety margin.
-    Minimum 2048 to avoid cutting short normal speech.
+    Qwen3-TTS 12Hz: ~12 audio tokens per second of speech.
+    Speaking rate: ~4-6 chars/sec (Russian/CJK), ~10-12 chars/sec (English).
+    Normal: 1 char ≈ 2-3 audio tokens. We allow 5 tokens/char (2x safety).
+    Minimum 256 tokens (~21s audio) — enough for any short phrase.
     """
-    return max(2048, len(text) * 12)
+    return max(256, len(text) * 5)
 
 
 def _synthesize_sync(
