@@ -148,14 +148,20 @@ def _is_session_error(exc: Exception) -> bool:
 
 
 @tool
-async def call_mcp_tool(tool_name: str, arguments: dict | None = None) -> str:
+async def call_mcp_tool(tool_name: str = "", arguments: dict | None = None) -> str:
     """Execute an MCP tool by name. Use find_tools() first to discover
     available tools and their parameter schemas.
 
     Args:
-        tool_name: Exact tool name (from find_tools results)
-        arguments: Tool arguments as a dictionary
+        tool_name: Exact tool name (from find_tools results). REQUIRED.
+        arguments: Tool arguments as a dictionary.
     """
+    if not tool_name:
+        return (
+            "[Error] tool_name is required. "
+            "Use find_tools(query) first to discover available tools, "
+            "then call call_mcp_tool(tool_name='exact_name', arguments={...})."
+        )
     t = _mcp_tool_registry.get(tool_name)
     if not t:
         close = [n for n in _mcp_tool_registry if tool_name.lower() in n.lower()][:5]
