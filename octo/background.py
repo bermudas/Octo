@@ -481,11 +481,34 @@ class BackgroundWorkerPool:
             "- Work autonomously. Do not wait for user input unless truly stuck.\n"
         )
 
+        # Build MCP server summary for background agent context
+        mcp_section = ""
+        try:
+            from octo.core.tools.mcp_proxy import get_mcp_server_summaries
+            _summaries = get_mcp_server_summaries()
+            if _summaries:
+                server_lines = [
+                    f"- **{s['server']}** ({s['tools']} tools): {s['summary']}"
+                    for s in _summaries
+                ]
+                mcp_section = (
+                    "\n\n## MCP Tool Access\n"
+                    "You have access to MCP tools via `find_tools(query)` and "
+                    "`call_mcp_tool(name, args)`.\n"
+                    "Workflow: search for tools first with find_tools, then call "
+                    "them with the exact name and arguments returned.\n\n"
+                    "Available servers:\n"
+                    + "\n".join(server_lines)
+                )
+        except Exception:
+            pass
+
         if agent_cfg and agent_cfg.system_prompt:
             system_prompt = (
                 agent_cfg.system_prompt
                 + f"\n\n## Current Objective\n{task.prompt}"
                 + bg_rules
+                + mcp_section
             )
         else:
             system_prompt = (
@@ -493,6 +516,7 @@ class BackgroundWorkerPool:
                 f"## Objective\n{task.prompt}"
                 + bg_rules
                 + "- You have filesystem tools (read, grep, glob, edit, bash) and MCP tools available.\n"
+                + mcp_section
             )
 
         # Build standalone agent (no supervisor overhead)
@@ -617,6 +641,21 @@ def make_dispatch_background_tool():
         Use this when a task will take several minutes or more. Do NOT use
         for quick operations that finish in seconds.
 
+        IMPORTANT — choosing task_type:
+        - **"agent"**: In-process LangGraph agent with full access to ALL tools
+          including MCP tools (Sirens TTS/STT/images/video, filesystem, etc.).
+          Use this for ANY task that needs MCP tools — media generation,
+          TTS, STT, video, image processing, workflows, or anything that uses
+          `find_tools`/`call_mcp_tool`. The agent runs in the same process
+          and shares all tool registries.
+        - **"process"**: Subprocess (shell command). Use ONLY for:
+          • `claude -p` commands (Claude Code tasks)
+          • Shell commands (scripts, builds, tests)
+          Process mode has NO access to MCP tools or Octo's tool registry.
+
+        Rule of thumb: if the task needs to call any MCP tool (Sirens, etc.),
+        use "agent". If it's a shell command or Claude Code task, use "process".
+
         IMPORTANT — timeout rules:
         - For `claude -p` commands: ALWAYS use timeout=0 (no timeout). Claude Code
           tasks routinely run 30-90 minutes. Setting 600 or 900 WILL kill the task
@@ -636,7 +675,7 @@ def make_dispatch_background_tool():
           CLAUDE_CONFIG_DIR is prohibited.
 
         Args:
-            task_type: "process" for subprocess (claude -p, shell), "agent" for LangGraph agent
+            task_type: "agent" for in-process agent with MCP tools, "process" for subprocess
             command: Shell command for process mode (e.g., "claude -p 'analyze codebase'")
             prompt: Task description for agent mode
             project: Project name from the registry (e.g., "onetest"). Auto-sets cwd
