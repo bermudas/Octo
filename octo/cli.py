@@ -31,6 +31,20 @@ def main(ctx: click.Context) -> None:
 @click.option("--no-telegram", is_flag=True, help="Disable Telegram bot")
 def chat(model: str, verbose: bool, debug: bool, voice: bool, thread: str, resume: bool, no_telegram: bool) -> None:
     """Start interactive chat session."""
+    import os
+    import signal
+    import time as _time
+
+    _last_sigint = [0.0]  # mutable so closure works in signal handler
+
+    def _sigint_handler(signum, frame):
+        now = _time.monotonic()
+        if now - _last_sigint[0] < 3.0:
+            os._exit(130)  # force kill — cleanup is stuck
+        _last_sigint[0] = now
+        signal.default_int_handler(signum, frame)
+
+    signal.signal(signal.SIGINT, _sigint_handler)
     asyncio.run(_chat_loop(model, verbose, debug, voice, thread, resume, no_telegram))
 
 
