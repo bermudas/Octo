@@ -83,8 +83,9 @@ async def generate_speech(
     Args:
         text: The text to convert to speech.
         voice: Voice name or alias.
-        instruct: Voice style description override (replaces the default
-                  voice description, e.g. "A calm male voice speaks slowly").
+        instruct: Emotion preset name OR full voice description override.
+                  Presets: calm, explaining, surprised, laughing, serious, whispering.
+                  Or pass a full description (e.g. "A calm male voice speaks slowly").
         language: Reserved for future use. Currently English only.
         output_path: Where to save the WAV file. If not provided,
                      saves to .octo/workspace/<today>/.
@@ -118,16 +119,18 @@ async def generate_multi_voice_speech(
 ) -> str:
     """Generate multi-voice speech with different voices for different parts.
 
-    Each segment has its own voice and optional style description.
+    Each segment has its own voice and optional emotion/style.
     Long segments are auto-chunked. Segments are concatenated with pauses.
     Output is saved to .octo/workspace/<date>/ by default.
 
     Args:
         segments: List of objects, each with "text", "voice", and optional
-                  "instruct" fields. Example:
+                  "instruct" fields. instruct can be an emotion preset
+                  (calm, explaining, surprised, laughing, serious, whispering)
+                  or a full description. Example:
                   [
-                    {"text": "Hello!", "voice": "Ryan"},
-                    {"text": "How are you?", "voice": "Vivian"}
+                    {"text": "Hello!", "voice": "Ryan", "instruct": "laughing"},
+                    {"text": "Interesting...", "voice": "Vivian", "instruct": "skeptical"}
                   ]
                   Currently English only.
         pause_ms: Milliseconds of silence between segments (default 300).

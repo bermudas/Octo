@@ -21,19 +21,39 @@ _model_id: str | None = None
 _DEFAULT_MODEL = "parler-tts/parler-tts-mini-v1.1"
 _SAMPLE_RATE = 44100
 
-# ── Voice profiles (description + per-voice seed) ────────────────────
+# ── Voice profiles (description + per-voice seed + emotion presets) ───
 # Each voice is defined by a natural language description and a fixed seed.
 # The seed controls timbre — different seeds produce different voices
 # from the same description.
+# Emotions are named description variants the agent can pick per-segment.
 
 _VOICES: dict[str, dict] = {
     "Ryan": {
         "description": "Ryan speaks with excitement and energy in a slightly high pitch",
         "seed": 42,
+        "emotions": {
+            "default": "Ryan speaks with excitement and energy in a slightly high pitch",
+            "calm": "Ryan speaks calmly and steadily in a clear voice",
+            "explaining": "Ryan speaks clearly and pedagogically, like a teacher",
+            "surprised": "Ryan speaks with surprise and disbelief",
+            "laughing": "Ryan speaks with laughter and amusement",
+            "serious": "Ryan speaks in a serious and thoughtful tone",
+            "whispering": "Ryan whispers softly and quietly",
+        },
     },
     "Vivian": {
         "description": "A female speaker speaks with laughter and curiosity",
         "seed": 87,
+        "emotions": {
+            "default": "A female speaker speaks with laughter and curiosity",
+            "calm": "A female speaker speaks calmly and gently",
+            "explaining": "A female speaker speaks clearly and informatively",
+            "skeptical": "A female speaker speaks with skepticism and doubt",
+            "surprised": "A female speaker speaks with shock and surprise",
+            "laughing": "A female speaker speaks with laughter and amusement",
+            "serious": "A female speaker speaks in a serious and measured tone",
+            "whispering": "A female speaker whispers softly",
+        },
     },
 }
 
@@ -99,8 +119,11 @@ def _get_model():
 def _resolve_voice(voice: str, instruct: str | None = None) -> tuple[str, int]:
     """Resolve voice name/alias to (description, seed).
 
-    If instruct is provided, it replaces the default description
-    (allowing full control over voice characteristics). Seed stays.
+    instruct can be:
+      - None → use default description
+      - An emotion name (e.g. "laughing", "serious") → resolve from presets
+      - A full description string → use as-is
+    Seed always comes from the voice profile.
     """
     # Map OpenAI alias to voice name
     name = _VOICE_MAP.get(voice, voice)
@@ -110,7 +133,13 @@ def _resolve_voice(voice: str, instruct: str | None = None) -> tuple[str, int]:
     if not profile:
         profile = _VOICES[_DEFAULT_VOICE]
 
-    description = instruct if instruct else profile["description"]
+    if not instruct:
+        description = profile["description"]
+    else:
+        # Check if instruct is an emotion preset name
+        emotions = profile.get("emotions", {})
+        description = emotions.get(instruct, instruct)
+
     return description, profile["seed"]
 
 
