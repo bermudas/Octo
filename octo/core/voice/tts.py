@@ -82,19 +82,7 @@ _VOICES: dict[str, dict] = {
     },
 }
 
-# Backward-compat aliases: old names → new named speakers
-_VOICE_MAP = {
-    # Old Octo voice names
-    "Ryan": "Jon",
-    "Vivian": "Laura",
-    # OpenAI aliases
-    "alloy": "Jon",
-    "echo": "Gary",
-    "fable": "Jon",
-    "onyx": "Gary",
-    "nova": "Laura",
-    "shimmer": "Lea",
-}
+_VOICE_MAP: dict[str, str] = {}
 
 _DEFAULT_VOICE = "Jon"
 

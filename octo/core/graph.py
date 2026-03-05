@@ -828,7 +828,7 @@ def _build_supervisor_prompt(
                     "## Voice Tools (Local TTS/STT)\n\n"
                     "Use `generate_speech` for single-voice TTS. Named speakers for consistent "
                     "voice: Jon (default male), Laura (warm female), Gary (deep male), "
-                    "Lea (bright female). Old names work: Ryan→Jon, Vivian→Laura.\n"
+                    "Lea (bright female).\n"
                     "Pass `instruct` for emotion — presets: calm, explaining, surprised, "
                     "laughing, serious, whispering, skeptical (Laura), excited (Lea). "
                     "Or pass a full custom voice description.\n"

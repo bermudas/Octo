@@ -80,8 +80,6 @@ async def generate_speech(
 
     Available voices: Jon (default male), Laura (warm female),
     Gary (deep authoritative male), Lea (bright cheerful female).
-    Old names work: Ryan→Jon, Vivian→Laura.
-    OpenAI aliases: alloy/fable→Jon, echo/onyx→Gary, nova→Laura, shimmer→Lea.
 
     Args:
         text: The text to convert to speech.
