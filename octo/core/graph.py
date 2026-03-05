@@ -826,16 +826,17 @@ def _build_supervisor_prompt(
             if _voice_ok():
                 parts.append(
                     "## Voice Tools (Local TTS/STT)\n\n"
-                    "Use `generate_speech` for single-voice TTS. Pass `instruct` for emotion/style "
-                    "(e.g. \"Say it warmly\", \"Say it with excitement\").\n"
+                    "Use `generate_speech` for single-voice TTS. Voices: Ryan (energetic male), "
+                    "Vivian (curious female). OpenAI aliases work: alloy/echo→Ryan, nova→Vivian.\n"
+                    "Pass `instruct` to override voice style description entirely.\n"
                     "Use `generate_multi_voice_speech` for multi-voice dialogue — each segment gets "
-                    "its own voice and instruct.\n"
+                    "its own voice.\n"
                     "Use `transcribe_audio` for speech-to-text.\n\n"
                     "Audio files are saved to `.octo/workspace/<date>/` by default. "
-                    "Pass `output_path` to save to a specific location (e.g. "
-                    "`.octo/workspace/2026-03-04/my-project/episode.wav`).\n"
+                    "Pass `output_path` to save to a specific location.\n"
                     "Tools return file info (path, size, duration). "
-                    "Use `send_voice` to deliver audio via Telegram."
+                    "Use `send_voice` to deliver audio via Telegram.\n"
+                    "Currently English only."
                 )
         except ImportError:
             pass

@@ -1,6 +1,6 @@
 [project]
 name = "octo-agent"
-version = "0.9.16"
+version = "0.9.17"
 description = "AI agent engine — embeddable LangGraph supervisor with multi-agent orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -60,10 +60,11 @@ postgres = [
     "langgraph-checkpoint-postgres>=0.1",
     "asyncpg>=0.29",
 ]
-# Local voice engine (Qwen3-TTS + MLX Whisper)
+# Local voice engine (ParlerTTS + MLX Whisper)
 voice = [
     "torch>=2.0",
-    "qwen_tts",
+    "parler_tts @ git+https://github.com/huggingface/parler-tts.git",
+    "transformers>=4.36",
     "mlx-whisper",
     "soundfile",
     "numpy",

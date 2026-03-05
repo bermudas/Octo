@@ -6,9 +6,9 @@ from __future__ import annotations
 
 
 def is_available() -> bool:
-    """Return True if local voice deps (qwen_tts, soundfile) are importable."""
+    """Return True if local voice deps (parler_tts, soundfile) are importable."""
     try:
-        import qwen_tts  # noqa: F401
+        import parler_tts  # noqa: F401
         import soundfile  # noqa: F401
         return True
     except ImportError:
@@ -16,10 +16,10 @@ def is_available() -> bool:
 
 
 async def local_synthesize(
-    text: str, voice: str = "Aiden", instruct: str | None = None,
+    text: str, voice: str = "Ryan", instruct: str | None = None,
     language: str | None = None,
 ) -> bytes:
-    """Synthesize text to WAV bytes using local Qwen3-TTS."""
+    """Synthesize text to WAV bytes using local ParlerTTS."""
     from octo.core.voice.tts import synthesize
     return await synthesize(text, voice, instruct=instruct, language=language)
 

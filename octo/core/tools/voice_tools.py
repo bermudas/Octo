@@ -66,34 +66,26 @@ def _audio_info(path: str) -> str:
 @tool
 async def generate_speech(
     text: str,
-    voice: str = "Aiden",
+    voice: str = "Ryan",
     instruct: str | None = None,
     language: str | None = None,
     output_path: str | None = None,
 ) -> str:
     """Generate speech audio from text (TTS).
 
-    Uses local Qwen3-TTS model. Automatically chunks long text.
+    Uses local ParlerTTS model. Automatically chunks long text.
     Output is saved to .octo/workspace/<date>/ by default,
     or to the specified output_path.
 
-    Available voices: Aiden (English male), Ryan (English male),
-    Vivian (Chinese female), Serena (Chinese female), Dylan (Chinese male),
-    Eric (Chinese male), Uncle_Fu (Chinese male),
-    Ono_Anna (Japanese female), Sohee (Korean female).
-
-    OpenAI aliases also work: alloy→Aiden, echo→Ryan, nova→Vivian,
-    shimmer→Serena, fable→Dylan, onyx→Uncle_Fu.
+    Available voices: Ryan (energetic male), Vivian (curious female).
+    OpenAI aliases also work: alloy/echo/fable/onyx→Ryan, nova/shimmer→Vivian.
 
     Args:
         text: The text to convert to speech.
         voice: Voice name or alias.
-        instruct: Emotion/style instruction (e.g. "Say it warmly",
-                  "Say it with excitement"). Qwen3-TTS specific.
-        language: Language for synthesis — "English" or "Russian".
-                  Auto-detected from text if not provided (Cyrillic → Russian,
-                  otherwise English). Cross-lingual combos (e.g. Chinese voice
-                  speaking English) use tighter generation params automatically.
+        instruct: Voice style description override (replaces the default
+                  voice description, e.g. "A calm male voice speaks slowly").
+        language: Reserved for future use. Currently English only.
         output_path: Where to save the WAV file. If not provided,
                      saves to .octo/workspace/<today>/.
 
@@ -126,18 +118,18 @@ async def generate_multi_voice_speech(
 ) -> str:
     """Generate multi-voice speech with different voices for different parts.
 
-    Each segment has its own voice and optional emotion instruction.
+    Each segment has its own voice and optional style description.
     Long segments are auto-chunked. Segments are concatenated with pauses.
     Output is saved to .octo/workspace/<date>/ by default.
 
     Args:
         segments: List of objects, each with "text", "voice", and optional
-                  "instruct" and "language" fields. Example:
+                  "instruct" fields. Example:
                   [
-                    {"text": "Hello!", "voice": "Ryan", "instruct": "Say it energetically"},
-                    {"text": "Привет!", "voice": "Vivian", "language": "Russian"}
+                    {"text": "Hello!", "voice": "Ryan"},
+                    {"text": "How are you?", "voice": "Vivian"}
                   ]
-                  Language auto-detects (Cyrillic → Russian, else English).
+                  Currently English only.
         pause_ms: Milliseconds of silence between segments (default 300).
         output_path: Where to save the WAV file. If not provided,
                      saves to .octo/workspace/<today>/.

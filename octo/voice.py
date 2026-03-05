@@ -1,7 +1,7 @@
-"""Voice module — local TTS/STT (Qwen3-TTS + Whisper) with ElevenLabs fallback.
+"""Voice module — local TTS/STT (ParlerTTS + Whisper) with ElevenLabs fallback.
 
 Engines (auto-detected):
-  1. Local — requires octo-agent[voice] extra (torch, qwen_tts, mlx-whisper)
+  1. Local — requires octo-agent[voice] extra (torch, parler_tts, mlx-whisper)
   2. ElevenLabs — requires ELEVENLABS_API_KEY
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ def engine_info() -> dict[str, str]:
             stt_backend = "none"
             stt_ready = False
         return {
-            "tts": "local (Qwen3-TTS)",
+            "tts": "local (ParlerTTS)",
             "stt": f"local ({stt_backend})" if stt_ready else "unavailable",
             "tts_ready": "True",
             "stt_ready": str(stt_ready),
@@ -122,7 +122,7 @@ async def transcribe(audio_data: bytes) -> str:
 
 async def synthesize(
     text: str,
-    voice: str = "Aiden",
+    voice: str = "Ryan",
     instruct: str | None = None,
     language: str | None = None,
     prep: bool = True,
