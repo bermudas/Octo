@@ -68,6 +68,7 @@ async def generate_speech(
     text: str,
     voice: str = "Aiden",
     instruct: str | None = None,
+    language: str | None = None,
     output_path: str | None = None,
 ) -> str:
     """Generate speech audio from text (TTS).
@@ -89,6 +90,10 @@ async def generate_speech(
         voice: Voice name or alias.
         instruct: Emotion/style instruction (e.g. "Say it warmly",
                   "Say it with excitement"). Qwen3-TTS specific.
+        language: Language for synthesis — "English" or "Russian".
+                  Auto-detected from text if not provided (Cyrillic → Russian,
+                  otherwise English). Cross-lingual combos (e.g. Chinese voice
+                  speaking English) use tighter generation params automatically.
         output_path: Where to save the WAV file. If not provided,
                      saves to .octo/workspace/<today>/.
 
@@ -104,7 +109,7 @@ async def generate_speech(
         return "Error: voice dependencies not installed. Install with: pip install octo-agent[voice]"
 
     try:
-        audio = await local_synthesize(text, voice=voice, instruct=instruct)
+        audio = await local_synthesize(text, voice=voice, instruct=instruct, language=language)
         path = _resolve_output_path(output_path, "speech")
         with open(path, "wb") as f:
             f.write(audio)
@@ -127,11 +132,12 @@ async def generate_multi_voice_speech(
 
     Args:
         segments: List of objects, each with "text", "voice", and optional
-                  "instruct" fields. Example:
+                  "instruct" and "language" fields. Example:
                   [
                     {"text": "Hello!", "voice": "Ryan", "instruct": "Say it energetically"},
-                    {"text": "Hi there!", "voice": "Vivian", "instruct": "Say it warmly"}
+                    {"text": "Привет!", "voice": "Vivian", "language": "Russian"}
                   ]
+                  Language auto-detects (Cyrillic → Russian, else English).
         pause_ms: Milliseconds of silence between segments (default 300).
         output_path: Where to save the WAV file. If not provided,
                      saves to .octo/workspace/<today>/.

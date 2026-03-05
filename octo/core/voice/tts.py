@@ -40,7 +40,8 @@ _SPEAKERS = {
     "Sohee": {"lang": "Korean", "desc": "Warm Korean female, rich emotion"},
 }
 
-_LANG_DEFAULTS = {
+# Native language of each voice — used to detect cross-lingual scenarios
+_NATIVE_LANG = {
     "Vivian": "Chinese",
     "Serena": "Chinese",
     "Uncle_Fu": "Chinese",
@@ -52,14 +53,26 @@ _LANG_DEFAULTS = {
     "Sohee": "Korean",
 }
 
-# ── Generation defaults (sampling for natural sound, fixed seed for consistency)
+# ── Generation parameters ────────────────────────────────────────────
+# Default: natural sound with moderate sampling
 _GEN_KWARGS = {
     "do_sample": True,
-    "temperature": 0.7,
-    "top_p": 0.9,
-    "top_k": 30,
-    "repetition_penalty": 1.1,
+    "temperature": 0.4,
+    "top_p": 0.92,
+    "top_k": 40,
+    "repetition_penalty": 1.15,
 }
+
+# Cross-lingual: tighter params when voice speaks non-native language
+# Prevents phoneme artifacts (e.g. "thzen" from Chinese voices on English)
+_GEN_KWARGS_CROSS_LINGUAL = {
+    "do_sample": True,
+    "temperature": 0.2,
+    "top_p": 0.85,
+    "top_k": 20,
+    "repetition_penalty": 1.3,
+}
+
 _VOICE_SEED = int(os.environ.get("VOICE_SEED", "42"))
 
 
@@ -124,23 +137,19 @@ def _get_model():
     return _model
 
 
-# ── Language detection ───────────────────────────────────────────────
+# ── Language detection (Russian vs English only) ─────────────────────
 
 def _detect_language(text: str) -> str:
-    """Simple language detection based on Unicode character ranges."""
+    """Detect language from text: Russian or English.
+
+    Only two languages supported. Cyrillic → Russian, everything else → English.
+    No autodetect for Chinese/Japanese/Korean — those are voice properties,
+    not text properties. The caller must pass language explicitly if needed.
+    """
     for ch in text:
-        cp = ord(ch)
-        if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
-            return "Chinese"
-        if 0x3040 <= cp <= 0x30FF or 0x31F0 <= cp <= 0x31FF:
-            return "Japanese"
-        if 0xAC00 <= cp <= 0xD7AF or 0x1100 <= cp <= 0x11FF:
-            return "Korean"
-        if 0x0400 <= cp <= 0x04FF:
+        if 0x0400 <= ord(ch) <= 0x04FF:
             return "Russian"
-        if 0x00C0 <= cp <= 0x00FF:
-            return "Auto"
-    return "Auto"
+    return "English"
 
 
 # ── Synchronous synthesis ────────────────────────────────────────────
@@ -160,6 +169,7 @@ def _synthesize_sync(
     text: str,
     voice: str,
     instruct: str | None = None,
+    language: str | None = None,
 ) -> bytes:
     """Run TTS inference synchronously. Returns WAV bytes."""
     import torch
@@ -176,11 +186,20 @@ def _synthesize_sync(
     if speaker not in _SPEAKERS:
         speaker = "Aiden"
 
-    lang = _detect_language(text)
-    if lang == "Auto":
-        lang = _LANG_DEFAULTS.get(speaker, "English")
+    # Language: explicit > detected from text (Russian/English only)
+    lang = language if language else _detect_language(text)
 
-    gen_kwargs = dict(_GEN_KWARGS)
+    # Select gen kwargs: cross-lingual needs tighter params
+    native = _NATIVE_LANG.get(speaker, "English")
+    if native != lang:
+        gen_kwargs = dict(_GEN_KWARGS_CROSS_LINGUAL)
+        logger.debug(
+            "Cross-lingual: %s (native %s) speaking %s — using tight params",
+            speaker, native, lang,
+        )
+    else:
+        gen_kwargs = dict(_GEN_KWARGS)
+
     gen_kwargs["max_new_tokens"] = _estimate_max_tokens(text)
 
     wavs, sr = model.generate_custom_voice(
@@ -317,6 +336,7 @@ async def synthesize(
     text: str,
     voice: str = "Aiden",
     instruct: str | None = None,
+    language: str | None = None,
     max_chars: int = 300,
 ) -> bytes:
     """Synthesize text to WAV bytes. Auto-chunks long text."""
@@ -325,13 +345,17 @@ async def synthesize(
         return b""
 
     if len(chunks) == 1:
-        return await asyncio.to_thread(_synthesize_sync, chunks[0], voice, instruct)
+        return await asyncio.to_thread(
+            _synthesize_sync, chunks[0], voice, instruct, language,
+        )
 
     logger.info("Chunked TTS: %d chunks (%d chars)", len(chunks), len(text))
     audio_chunks: list[bytes] = []
     for i, chunk in enumerate(chunks):
         logger.debug("Synthesizing chunk %d/%d (%d chars)", i + 1, len(chunks), len(chunk))
-        audio = await asyncio.to_thread(_synthesize_sync, chunk, voice, instruct)
+        audio = await asyncio.to_thread(
+            _synthesize_sync, chunk, voice, instruct, language,
+        )
         audio_chunks.append(audio)
 
     return concat_audio_chunks(audio_chunks)
@@ -341,7 +365,7 @@ async def synthesize_multi(
     segments: list[dict],
     pause_ms: int = 300,
 ) -> bytes:
-    """Multi-voice synthesis. Each segment: {text, voice, instruct?}.
+    """Multi-voice synthesis. Each segment: {text, voice, instruct?, language?}.
 
     Auto-chunks long segments. Concatenates with silence between segments.
     """
@@ -354,6 +378,7 @@ async def synthesize_multi(
             text=seg["text"],
             voice=seg.get("voice", "Aiden"),
             instruct=seg.get("instruct"),
+            language=seg.get("language"),
         )
         wav_parts.append(wav)
 

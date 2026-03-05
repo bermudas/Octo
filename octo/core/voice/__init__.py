@@ -17,10 +17,11 @@ def is_available() -> bool:
 
 async def local_synthesize(
     text: str, voice: str = "Aiden", instruct: str | None = None,
+    language: str | None = None,
 ) -> bytes:
     """Synthesize text to WAV bytes using local Qwen3-TTS."""
     from octo.core.voice.tts import synthesize
-    return await synthesize(text, voice, instruct=instruct)
+    return await synthesize(text, voice, instruct=instruct, language=language)
 
 
 async def local_synthesize_multi(
