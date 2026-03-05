@@ -152,14 +152,14 @@ def _get_model():
 
 # ── Voice resolution ─────────────────────────────────────────────────
 
-def _resolve_voice(voice: str, instruct: str | None = None) -> tuple[str, int]:
+def _resolve_voice(voice: str, instruct: str | None = None, seed: int | None = None) -> tuple[str, int]:
     """Resolve voice name/alias to (description, seed).
 
     instruct can be:
       - None → use default description
       - An emotion name (e.g. "laughing", "serious") → resolve from presets
       - A full description string → use as-is
-    Seed always comes from the voice profile.
+    Seed comes from explicit parameter > voice profile default.
     """
     # Map OpenAI alias to voice name
     name = _VOICE_MAP.get(voice, voice)
@@ -176,7 +176,9 @@ def _resolve_voice(voice: str, instruct: str | None = None) -> tuple[str, int]:
         emotions = profile.get("emotions", {})
         description = emotions.get(instruct, instruct)
 
-    return description, profile["seed"]
+    # Use explicit seed if provided, otherwise profile default
+    final_seed = seed if seed is not None else profile["seed"]
+    return description, final_seed
 
 
 # ── Synchronous synthesis ────────────────────────────────────────────
@@ -186,15 +188,16 @@ def _synthesize_sync(
     voice: str,
     instruct: str | None = None,
     language: str | None = None,
+    seed: int | None = None,
 ) -> bytes:
     """Run TTS inference synchronously. Returns WAV bytes."""
     from transformers import set_seed
     import soundfile as sf
 
-    description, seed = _resolve_voice(voice, instruct)
+    description, resolved_seed = _resolve_voice(voice, instruct, seed)
 
     # set_seed covers torch, cuda, and numpy RNGs for full reproducibility
-    set_seed(seed)
+    set_seed(resolved_seed)
 
     model, tokenizer, desc_tokenizer = _get_model()
     device = next(model.parameters()).device
@@ -343,6 +346,7 @@ async def synthesize(
     instruct: str | None = None,
     language: str | None = None,
     max_chars: int = 300,
+    seed: int | None = None,
 ) -> bytes:
     """Synthesize text to WAV bytes. Auto-chunks long text."""
     chunks = chunk_text(text, max_chars)
@@ -351,7 +355,7 @@ async def synthesize(
 
     if len(chunks) == 1:
         return await asyncio.to_thread(
-            _synthesize_sync, chunks[0], voice, instruct, language,
+            _synthesize_sync, chunks[0], voice, instruct, language, seed,
         )
 
     logger.info("Chunked TTS: %d chunks (%d chars)", len(chunks), len(text))
@@ -359,7 +363,7 @@ async def synthesize(
     for i, chunk in enumerate(chunks):
         logger.debug("Synthesizing chunk %d/%d (%d chars)", i + 1, len(chunks), len(chunk))
         audio = await asyncio.to_thread(
-            _synthesize_sync, chunk, voice, instruct, language,
+            _synthesize_sync, chunk, voice, instruct, language, seed,
         )
         audio_chunks.append(audio)
 
@@ -400,6 +404,7 @@ async def synthesize_multi(
                 voice=voice,
                 instruct=instruct,
                 language=seg.get("language"),
+                seed=seg.get("seed"),
             )
             wav_by_idx[idx] = wav
 
