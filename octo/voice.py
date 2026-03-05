@@ -124,6 +124,7 @@ async def synthesize(
     text: str,
     voice: str = "Aiden",
     instruct: str | None = None,
+    language: str | None = None,
     prep: bool = True,
 ) -> bytes | None:
     """Convert text to audio bytes.
@@ -132,6 +133,7 @@ async def synthesize(
         text: Text to synthesize.
         voice: Voice name (Qwen3-TTS speaker or OpenAI alias).
         instruct: Emotion/style instruction (e.g. "Say it warmly").
+        language: "English" or "Russian". Auto-detected if not provided.
         prep: If True, run voiceover text preparation before synthesis.
 
     Returns audio bytes (WAV or mp3), or None on failure.
@@ -144,7 +146,7 @@ async def synthesize(
     if engine == "local":
         try:
             from octo.core.voice import local_synthesize
-            return await local_synthesize(text, voice=voice, instruct=instruct)
+            return await local_synthesize(text, voice=voice, instruct=instruct, language=language)
         except Exception:
             logger.exception("Local TTS error")
             return None
