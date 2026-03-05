@@ -42,4 +42,35 @@ def escalate_question(question: str) -> str:
     )
 
 
-AGENT_LIFECYCLE_TOOLS = [task_complete, escalate_question]
+# ── Restart signalling ────────────────────────────────────────────────
+_restart_requested = False
+
+
+def is_restart_requested() -> bool:
+    return _restart_requested
+
+
+def clear_restart_flag() -> None:
+    global _restart_requested
+    _restart_requested = False
+
+
+@tool
+def request_restart(reason: str) -> str:
+    """Request Octo to restart itself so code changes take effect.
+
+    Call this AFTER you have finished editing Octo's own source files and
+    need the running process to reload with the new code.  The restart
+    happens gracefully after the current turn completes — the session is
+    preserved and resumed automatically.
+
+    Args:
+        reason: brief explanation of why a restart is needed (e.g.
+            "applied bugfix to octo/graph.py").
+    """
+    global _restart_requested
+    _restart_requested = True
+    return f"Restart scheduled. Reason: {reason}. It will happen after this response."
+
+
+AGENT_LIFECYCLE_TOOLS = [task_complete, escalate_question, request_restart]
