@@ -77,9 +77,12 @@ _GEN_KWARGS_CROSS_LINGUAL = {
     "subtalker_top_p": 0.8,
 }
 
-# Sacrificial prefix for cross-lingual: absorbs the CJK phoneme bleed.
+# Sacrificial prefix per language: absorbs the CJK phoneme bleed.
 # Must end with sentence boundary (period) so there's a detectable pause.
-_SACRIFICE_PREFIX = "One moment please."
+_SACRIFICE_PREFIX = {
+    "English": "One moment please.",
+    "Russian": "Одну секунду пожалуйста.",
+}
 
 _VOICE_SEED = int(os.environ.get("VOICE_SEED", "42"))
 
@@ -269,7 +272,8 @@ def _synthesize_sync(
     # The artifact bleeds into the sacrifice instead of the real text.
     synth_text = text
     if is_cross_lingual:
-        synth_text = f"{_SACRIFICE_PREFIX} {text}"
+        prefix = _SACRIFICE_PREFIX.get(lang, _SACRIFICE_PREFIX["English"])
+        synth_text = f"{prefix} {text}"
 
     gen_kwargs["max_new_tokens"] = _estimate_max_tokens(synth_text)
 
