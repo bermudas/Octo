@@ -703,7 +703,17 @@ def _build_supervisor_prompt(
     # Only show LLM-invocable skills in the prompt
     llm_skills = [s for s in skills if s.model_invocation]
     if llm_skills:
-        skill_lines = [f"- **/{s.name}**: {s.description}" for s in llm_skills]
+        skill_lines = []
+        for s in llm_skills:
+            line = f"- **/{s.name}**: {s.description}"
+            extras = []
+            if s.allowed_tools:
+                extras.append(f"tools: {', '.join(s.allowed_tools)}")
+            if s.references:
+                extras.append(f"{len(s.references)} reference doc(s)")
+            if extras:
+                line += f" ({'; '.join(extras)})"
+            skill_lines.append(line)
         parts.append(
             "## Available Skills\n\n"
             + "\n".join(skill_lines)
@@ -1241,17 +1251,33 @@ async def build_graph(
         result = f"{dep_notice}[Skill: {skill_name}]\n\n{sk.body}"
         if user_request:
             result += f"\n\nUser request: {user_request}"
-        # Progressive disclosure: list available references and scripts
-        if sk.references or sk.scripts:
-            result += "\n\n---\n**Bundled resources** (use Read/Bash tools to access on demand):"
-            if sk.references:
-                result += "\nReference docs:"
-                for ref in sk.references:
+        # Allowed tools hint
+        if sk.allowed_tools:
+            result += f"\n\n**Recommended tools**: {', '.join(sk.allowed_tools)}"
+        # Inline pre-loaded reference contents (structured context)
+        if sk.reference_contents:
+            result += "\n\n---\n## Reference Documents\n"
+            for ref_path, content in sk.reference_contents.items():
+                filename = ref_path.rsplit("/", 1)[-1]
+                result += f"\n### {filename}\n\n{content}\n"
+        # List any references that weren't pre-loaded (too large)
+        not_loaded = [r for r in sk.references if r not in sk.reference_contents]
+        if not_loaded or sk.scripts:
+            result += "\n\n---\n**Additional resources** (use Read tools to access):"
+            for ref in not_loaded:
+                if sk.skill_dir:
                     result += f"\n- `{sk.skill_dir}/{ref}`"
+                elif sk.storage_prefix:
+                    result += f"\n- `{sk.storage_prefix}/{ref}`"
+                else:
+                    result += f"\n- `{ref}`"
             if sk.scripts:
                 result += "\nScripts:"
                 for scr in sk.scripts:
-                    result += f"\n- `{sk.skill_dir}/{scr}`"
+                    if sk.skill_dir:
+                        result += f"\n- `{sk.skill_dir}/{scr}`"
+                    else:
+                        result += f"\n- `{scr}`"
         return result
 
     # Build workers:

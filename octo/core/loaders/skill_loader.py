@@ -32,17 +32,22 @@ class SkillConfig:
     description: str
     body: str  # full markdown content for injection into conversation
     model_invocation: bool = True  # False = user-only (/slash command), not offered to LLM
-    # --- marketplace fields (optional, backward-compatible) ---
+    # --- agentskills.io standard fields ---
     version: str = "0.0.0"
     author: str = ""
     tags: list[str] = field(default_factory=list)
+    allowed_tools: list[str] = field(default_factory=list)  # pre-approved tool names
+    compatibility: str = ""  # environment requirements (agentskills.io)
+    # --- extended fields ---
     dependencies: dict = field(default_factory=dict)
     requires: list[dict] = field(default_factory=list)
     permissions: dict = field(default_factory=dict)
-    source: str = "local"  # "local" | "marketplace"
+    source: str = "local"  # "local" | "marketplace" | "storage"
     # --- progressive disclosure ---
-    skill_dir: Path | None = None  # absolute path to skill directory
+    skill_dir: Path | None = None  # absolute path to skill directory (filesystem mode)
+    storage_prefix: str = ""  # storage path prefix, e.g. "skills/test-generation" (storage mode)
     references: list[str] = field(default_factory=list)  # relative paths of files in references/
+    reference_contents: dict[str, str] = field(default_factory=dict)  # {relative_path: content} pre-loaded
     scripts: list[str] = field(default_factory=list)  # relative paths of files in scripts/
 
 
@@ -89,6 +94,13 @@ def _parse_skill_md_text(text: str, fallback_name: str = "skill") -> SkillConfig
     if isinstance(model_invocation, str):
         model_invocation = model_invocation.lower() not in ("false", "no", "0")
 
+    # allowed-tools: space-delimited string or YAML list
+    raw_tools = meta.get("allowed-tools", [])
+    if isinstance(raw_tools, str):
+        allowed_tools = raw_tools.split()
+    else:
+        allowed_tools = list(raw_tools) if raw_tools else []
+
     return SkillConfig(
         name=name,
         description=description,
@@ -97,6 +109,8 @@ def _parse_skill_md_text(text: str, fallback_name: str = "skill") -> SkillConfig
         version=str(meta.get("version", "0.0.0")),
         author=meta.get("author", ""),
         tags=meta.get("tags", []),
+        allowed_tools=allowed_tools,
+        compatibility=meta.get("compatibility", ""),
         dependencies=meta.get("dependencies", {}),
         requires=meta.get("requires", []),
         permissions=meta.get("permissions", {}),
@@ -112,6 +126,19 @@ def _parse_skill_md(path: Path) -> SkillConfig | None:
         cfg.skill_dir = skill_dir
         cfg.references = _catalog_subdir(skill_dir, "references")
         cfg.scripts = _catalog_subdir(skill_dir, "scripts")
+        # Pre-load reference contents (max 8KB each, max 32KB total)
+        total_loaded = 0
+        for ref_path in cfg.references:
+            if total_loaded >= 32_000:
+                break
+            full_path = skill_dir / ref_path
+            try:
+                content = full_path.read_text(encoding="utf-8")
+                if len(content) <= 8_000:
+                    cfg.reference_contents[ref_path] = content
+                    total_loaded += len(content)
+            except Exception:
+                pass
     return cfg
 
 
@@ -227,17 +254,34 @@ def verify_skills_deps(skills: list[SkillConfig]) -> dict[str, list[str]]:
 # Async storage-based loading (for OctoEngine / S3 / Artifacts)
 # ---------------------------------------------------------------------------
 
+async def _catalog_storage_subdir(storage: Any, skill_prefix: str, subdir: str) -> list[str]:
+    """List files in a skill's subdirectory within storage (references/, scripts/).
+
+    Returns relative paths like "references/api-guide.md".
+    """
+    full_prefix = f"{skill_prefix}/{subdir}"
+    try:
+        entries = await storage.list_dir(full_prefix)
+    except (FileNotFoundError, Exception):
+        return []
+    # entries are filenames within the subdir
+    return sorted(f"{subdir}/{e.rstrip('/')}" for e in entries if e.rstrip("/"))
+
+
 async def load_skills_from_storage(storage: Any, prefix: str = "skills") -> list[SkillConfig]:
     """Load SKILL.md files from a StorageBackend (S3, filesystem, etc.).
 
     Expects layout:
         {prefix}/
-            test-generation/SKILL.md
-            artifacts-management/SKILL.md
+            test-generation/
+                SKILL.md
+                references/       # optional — extra context docs
+                    api-guide.md
+                    examples.md
 
     Each subdirectory under {prefix}/ should contain a SKILL.md file.
-    Note: references/ and scripts/ subdirectories are not supported for
-    storage-based skills (no local filesystem path).
+    Optional references/ subdirectories are scanned and their paths stored
+    in SkillConfig.references for progressive disclosure.
 
     Args:
         storage: A StorageBackend instance (S3Storage, FilesystemStorage, etc.).
@@ -270,10 +314,38 @@ async def load_skills_from_storage(storage: Any, prefix: str = "skills") -> list
         cfg = _parse_skill_md_text(text, fallback_name=dir_name)
         if cfg and cfg.name not in seen_names:
             cfg.source = "storage"
+            cfg.storage_prefix = f"{prefix}/{dir_name}"
+            # Scan references/ subdirectory and pre-load contents
+            cfg.references = await _catalog_storage_subdir(
+                storage, f"{prefix}/{dir_name}", "references",
+            )
+            # Pre-load reference contents (max 8KB each, max 32KB total)
+            if cfg.references:
+                total_loaded = 0
+                for ref_path in cfg.references:
+                    if total_loaded >= 32_000:
+                        break
+                    full_path = f"{prefix}/{dir_name}/{ref_path}"
+                    try:
+                        content = await storage.read(full_path)
+                        if len(content) <= 8_000:
+                            cfg.reference_contents[ref_path] = content
+                            total_loaded += len(content)
+                        else:
+                            log.debug(
+                                "Skipping large reference %s (%d bytes)",
+                                full_path, len(content),
+                            )
+                    except Exception:
+                        pass
             seen_names.add(cfg.name)
             skills.append(cfg)
 
     if skills:
-        log.info("Loaded %d skill(s) from storage prefix '%s'", len(skills), prefix)
+        loaded_refs = sum(len(s.reference_contents) for s in skills)
+        log.info(
+            "Loaded %d skill(s) from storage prefix '%s' (%d reference(s) pre-loaded)",
+            len(skills), prefix, loaded_refs,
+        )
 
     return skills
