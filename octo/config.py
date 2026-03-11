@@ -134,7 +134,79 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
 # --- GitHub Models ---
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+
+
+def _discover_github_token(*, return_source: bool = False) -> str | tuple[str, str]:
+    """Resolve a GitHub OAuth token from multiple sources.
+
+    Resolution order:
+    1. ``GITHUB_TOKEN`` env var (set via .env or shell)
+    2. ``GITHUB_COPILOT_TOKEN`` env var (explicit Copilot override)
+    3. ``gh auth token`` CLI command (reads macOS Keychain or Linux
+       credential store via the GitHub CLI)
+    4. ``~/.config/gh/hosts.yml`` inline ``oauth_token`` field
+       (some Linux gh installations store the token in the file)
+    5. macOS Keychain via ``security find-generic-password``
+
+    When ``return_source=True`` returns ``(token, source_description)``
+    instead of just the token string.
+    """
+    def _ret(token: str, source: str) -> str | tuple[str, str]:
+        return (token, source) if return_source else token
+
+    # 1. Standard env var (populated by load_dotenv above)
+    token = os.getenv("GITHUB_TOKEN", "")
+    if token:
+        return _ret(token, "GITHUB_TOKEN env var")
+
+    # 2. Optional explicit Copilot-specific override
+    token = os.getenv("GITHUB_COPILOT_TOKEN", "")
+    if token:
+        return _ret(token, "GITHUB_COPILOT_TOKEN env var")
+
+    # 3. gh CLI (handles macOS Keychain + Linux credential stores)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True, text=True, timeout=3,
+        )
+        token = result.stdout.strip()
+        if token and token.startswith("gh"):
+            return _ret(token, "gh CLI (gh auth token)")
+    except Exception:
+        pass
+
+    # 4. ~/.config/gh/hosts.yml inline token (Linux without keychain)
+    try:
+        hosts_file = Path.home() / ".config" / "gh" / "hosts.yml"
+        if hosts_file.exists():
+            import re
+            content = hosts_file.read_text()
+            m = re.search(r"oauth_token:\s*(\S+)", content)
+            if m:
+                return _ret(m.group(1), "~/.config/gh/hosts.yml")
+    except Exception:
+        pass
+
+    # 5. macOS Keychain (fallback when gh CLI is not installed)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["security", "find-generic-password",
+             "-a", "gh", "-s", "gh:github.com", "-w"],
+            capture_output=True, text=True, timeout=3,
+        )
+        token = result.stdout.strip()
+        if token:
+            return _ret(token, "macOS Keychain")
+    except Exception:
+        pass
+
+    return _ret("", "none")
+
+
+GITHUB_TOKEN = _discover_github_token()
 # Base URLs — override if using a custom proxy or Azure AI Foundry resource
 GITHUB_MODELS_BASE_URL = os.getenv(
     "GITHUB_MODELS_BASE_URL", "https://models.inference.ai.azure.com"
