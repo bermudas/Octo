@@ -227,23 +227,18 @@ def _collect_credentials(provider: str) -> dict[str, str]:
             default=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
         )
 
-    elif provider == "github":
-        existing = os.environ.get("GITHUB_TOKEN", "")
-        if existing:
-            console.print("  [dim]Using GITHUB_TOKEN from environment[/dim]")
-            creds["GITHUB_TOKEN"] = existing
+    elif provider in ("github", "copilot"):
+        from octo.config import _discover_github_token
+        token, source = _discover_github_token(return_source=True)
+        if token:
+            console.print(f"  [dim]Using token from {source}[/dim]")
+            creds["GITHUB_TOKEN"] = token
         else:
-            console.print("  [dim]Create a PAT at github.com/settings/tokens with 'models:read' scope[/dim]")
-            creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub Personal Access Token", password=True)
-
-    elif provider == "copilot":
-        existing = os.environ.get("GITHUB_TOKEN", "")
-        if existing:
-            console.print("  [dim]Using GITHUB_TOKEN from environment (OAuth gho_ token)[/dim]")
-            creds["GITHUB_TOKEN"] = existing
-        else:
-            console.print("  [dim]Requires a GitHub OAuth token (gho_) with Copilot access[/dim]")
-            creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub OAuth Token", password=True)
+            if provider == "copilot":
+                console.print("  [dim]Requires a GitHub OAuth token (gho_) with Copilot access[/dim]")
+            else:
+                console.print("  [dim]Create a PAT at github.com/settings/tokens with 'models:read' scope[/dim]")
+            creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub Token", password=True)
 
     elif provider == "gemini":
         existing = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
