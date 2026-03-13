@@ -106,6 +106,17 @@ def _check_provider_credentials() -> CheckResult:
     if OPENAI_API_BASE:
         providers.append("local")
 
+    # copilot-cli: available if the binary is discoverable
+    try:
+        import shutil
+        from octo.models import _resolve_copilot_cli_cmd
+
+        _cli_cmd = _resolve_copilot_cli_cmd("")
+        if shutil.which(_cli_cmd[0]):
+            providers.append("copilot-cli")
+    except Exception:
+        pass
+
     if warnings and not providers:
         return CheckResult(
             "Provider credentials",
@@ -138,6 +149,9 @@ async def _check_llm_connectivity() -> CheckResult:
             AZURE_OPENAI_API_KEY,
             AZURE_OPENAI_API_VERSION,
             AZURE_OPENAI_ENDPOINT,
+            COPILOT_CLI_EXTRA_FLAGS,
+            COPILOT_CLI_PATH,
+            COPILOT_CLI_TIMEOUT,
             GITHUB_COPILOT_BASE_URL,
             GITHUB_TOKEN,
             GOOGLE_API_KEY,
@@ -163,6 +177,9 @@ async def _check_llm_connectivity() -> CheckResult:
             "AZURE_OPENAI_API_VERSION": AZURE_OPENAI_API_VERSION,
             "GITHUB_TOKEN": GITHUB_TOKEN,
             "GITHUB_COPILOT_BASE_URL": GITHUB_COPILOT_BASE_URL,
+            "COPILOT_CLI_PATH": COPILOT_CLI_PATH,
+            "COPILOT_CLI_EXTRA_FLAGS": COPILOT_CLI_EXTRA_FLAGS,
+            "COPILOT_CLI_TIMEOUT": str(COPILOT_CLI_TIMEOUT),
             "GOOGLE_API_KEY": GOOGLE_API_KEY,
         }
 

@@ -52,6 +52,9 @@ from octo.config import (
     GITHUB_MODELS_BASE_URL,
     GITHUB_MODELS_ANTHROPIC_BASE_URL,
     GITHUB_COPILOT_BASE_URL,
+    COPILOT_CLI_PATH,
+    COPILOT_CLI_EXTRA_FLAGS,
+    COPILOT_CLI_TIMEOUT,
     GOOGLE_API_KEY,
     LLM_PROVIDER,
     DEFAULT_MODEL,
@@ -97,6 +100,9 @@ def _cfg(config: dict | None, key: str, default: str = "") -> str:
         "github_base_url": GITHUB_MODELS_BASE_URL,
         "github_anthropic_base_url": GITHUB_MODELS_ANTHROPIC_BASE_URL,
         "copilot_base_url": GITHUB_COPILOT_BASE_URL,
+        "copilot_cli_path": COPILOT_CLI_PATH,
+        "copilot_cli_extra_flags": COPILOT_CLI_EXTRA_FLAGS,
+        "copilot_cli_timeout": str(COPILOT_CLI_TIMEOUT),
         "google_api_key": GOOGLE_API_KEY,
         "default_model": DEFAULT_MODEL,
         "high_tier_model": HIGH_TIER_MODEL,
@@ -352,6 +358,189 @@ def _make_local(name: str, *, config: dict | None = None) -> BaseChatModel:
 
 
 # ---------------------------------------------------------------------------
+# GitHub Copilot CLI — subprocess-based provider
+# ---------------------------------------------------------------------------
+
+class CopilotCLIModel(BaseChatModel):
+    """LangChain BaseChatModel that delegates to the native GitHub Copilot CLI.
+
+    Invokes ``gh copilot -- -p "<prompt>" -s [--model <model>] [extra_flags...]``
+    and returns the captured stdout as the AI response.  This unlocks models
+    only available through the CLI (``gpt-5.x``, ``claude-sonnet-4.6``, etc.)
+    and lets you pass ``--additional-mcp-config``, ``--allow-all``,
+    ``--enable-all-github-mcp-tools``, etc. via ``COPILOT_CLI_EXTRA_FLAGS``.
+
+    Model names use the ``copilot-cli/`` prefix when specified via
+    ``DEFAULT_MODEL``; the prefix is stripped before passing ``--model``.
+    """
+
+    # Pydantic fields — set by _make_copilot_cli()
+    model: str = "gpt-4.1"
+    cmd: list[str] = ["gh", "copilot", "--"]
+    extra_flags: list[str] = []
+    cli_timeout: int = 120
+
+    @property
+    def _llm_type(self) -> str:
+        return "copilot-cli"
+
+    def bind_tools(self, tools, **kwargs):
+        """No-op — the Copilot CLI subprocess communicates via plain text and
+        cannot emit structured tool-call JSON.  Returns self so the graph
+        builds without crashing, but tool invocations will not be dispatched.
+
+        **Implication:** copilot-cli is suitable for direct conversational use
+        (``/model copilot-cli/<model>`` for a single prompt) but NOT as the
+        default supervisor/worker model when Octo needs built-in tools
+        (write_file, send_file, web_search, etc.).  Use ``github``, ``copilot``
+        (REST API), or ``anthropic`` for full agentic operation.
+        """
+        return self
+
+    def with_structured_output(self, schema, **kwargs):
+        """No-op override — returns self (plain text output)."""
+        return self
+
+    def _format_prompt(self, messages: list) -> str:  # noqa: ANN001
+        """Flatten a message list into a single text prompt."""
+        from langchain_core.messages import AIMessage as _AI
+        from langchain_core.messages import HumanMessage as _Human
+        from langchain_core.messages import SystemMessage as _System
+
+        parts: list[str] = []
+        for msg in messages:
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            if isinstance(msg, _System):
+                parts.append(f"[System: {content}]")
+            elif isinstance(msg, _AI):
+                parts.append(f"Assistant: {content}")
+            else:  # HumanMessage or any unknown
+                parts.append(f"User: {content}")
+        return "\n\n".join(parts)
+
+    def _build_cmd(self, prompt: str) -> list[str]:
+        cmd = list(self.cmd)
+        cmd.extend(["-p", prompt, "-s"])
+        if self.model:
+            cmd.extend(["--model", self.model])
+        cmd.extend(self.extra_flags)
+        return cmd
+
+    def _generate(
+        self,
+        messages: list,  # noqa: ANN001
+        stop: list[str] | None = None,
+        run_manager=None,  # noqa: ANN001
+        **kwargs,
+    ):
+        import subprocess
+
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        prompt = self._format_prompt(messages)
+        cmd = self._build_cmd(prompt)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=self.cli_timeout,
+        )
+        text = result.stdout.strip()
+        if result.returncode != 0 and not text:
+            raise RuntimeError(
+                f"Copilot CLI exited {result.returncode}: {result.stderr[:300]}"
+            )
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=text))]
+        )
+
+    async def _agenerate(
+        self,
+        messages: list,  # noqa: ANN001
+        stop: list[str] | None = None,
+        run_manager=None,  # noqa: ANN001
+        **kwargs,
+    ):
+        import asyncio
+
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        prompt = self._format_prompt(messages)
+        cmd = self._build_cmd(prompt)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=float(self.cli_timeout),
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(
+                f"Copilot CLI timed out after {self.cli_timeout}s"
+            )
+        text = stdout.decode().strip()
+        if proc.returncode != 0 and not text:
+            raise RuntimeError(
+                f"Copilot CLI exited {proc.returncode}: {stderr.decode()[:300]}"
+            )
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=text))]
+        )
+
+
+def _parse_extra_flags(raw: str) -> list[str]:
+    """Parse COPILOT_CLI_EXTRA_FLAGS — accepts JSON array or whitespace-separated."""
+    if not raw:
+        return []
+    raw = raw.strip()
+    if raw.startswith("["):
+        import json
+        return json.loads(raw)
+    return raw.split()
+
+
+def _resolve_copilot_cli_cmd(path_override: str) -> list[str]:
+    """Resolve the base command for the Copilot CLI.
+
+    Priority:
+    1. ``COPILOT_CLI_PATH`` env var (custom binary or wrapper).
+    2. ``copilot`` directly in PATH (native install).
+    3. ``gh copilot --`` (bundled through GitHub CLI).
+    """
+    import shutil
+
+    if path_override:
+        # Support "copilot" (single token) or "gh copilot --" (multi-token)
+        return path_override.split()
+
+    if shutil.which("copilot"):
+        return ["copilot"]
+
+    return ["gh", "copilot", "--"]
+
+
+def _make_copilot_cli(name: str, *, config: dict | None = None) -> BaseChatModel:
+    """Create a CopilotCLIModel wrapping the native GitHub Copilot CLI."""
+    model_id = name.removeprefix("copilot-cli/")
+    path_override = _cfg(config, "copilot_cli_path")
+    extra_raw = _cfg(config, "copilot_cli_extra_flags")
+    timeout_raw = _cfg(config, "copilot_cli_timeout") or "120"
+
+    return CopilotCLIModel(
+        model=model_id,
+        cmd=_resolve_copilot_cli_cmd(path_override),
+        extra_flags=_parse_extra_flags(extra_raw),
+        cli_timeout=int(timeout_raw),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Provider registry — single source of truth for factories + default models
 # ---------------------------------------------------------------------------
 
@@ -375,6 +564,10 @@ _REGISTRY: dict[str, ProviderSpec] = {
     "copilot": ProviderSpec(
         _make_copilot,
         "copilot/gpt-4o", "copilot/claude-sonnet-4-5", "copilot/gpt-4o-mini",
+    ),
+    "copilot-cli": ProviderSpec(
+        _make_copilot_cli,
+        "copilot-cli/gpt-4.1", "copilot-cli/claude-sonnet-4.6", "copilot-cli/gpt-5-mini",
     ),
     "gemini": ProviderSpec(
         _make_gemini, "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",

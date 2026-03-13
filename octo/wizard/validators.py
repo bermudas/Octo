@@ -19,6 +19,7 @@ def validate_provider(
             "azure": _validate_azure,
             "github": _validate_github,
             "copilot": _validate_copilot,
+            "copilot-cli": _validate_copilot_cli,
             "gemini": _validate_gemini,
             "local": _validate_local,
         }.get(provider)
@@ -144,3 +145,29 @@ def _validate_local(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
     )
     llm.invoke("Say 'ok'")
     return True, f"Connected to local endpoint ({base_url}, model={model})"
+
+
+def _validate_copilot_cli(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
+    """Validate the Copilot CLI provider by running a minimal subprocess call."""
+    import shutil
+    import subprocess
+
+    from octo.models import _parse_extra_flags, _resolve_copilot_cli_cmd
+
+    path_override = creds.get("COPILOT_CLI_PATH", "")
+    cmd = _resolve_copilot_cli_cmd(path_override)
+
+    # Verify the binary exists before attempting a real call
+    binary = cmd[0]
+    if not shutil.which(binary):
+        return False, f"Copilot CLI binary not found: '{binary}' — install via `gh extension install github/gh-copilot` or ensure `copilot` is in PATH"
+
+    model_id = (model_name or "copilot-cli/gpt-4.1").removeprefix("copilot-cli/")
+    extra_flags = _parse_extra_flags(creds.get("COPILOT_CLI_EXTRA_FLAGS", ""))
+
+    full_cmd = cmd + ["-p", "Say 'ok'", "-s", "--model", model_id, "--log-level", "none"] + extra_flags
+    result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode == 0 and result.stdout.strip():
+        return True, f"Connected to Copilot CLI ({' '.join(cmd)}, model={model_id})"
+    err = (result.stderr or result.stdout).strip()[:200]
+    return False, f"Copilot CLI failed (exit {result.returncode}): {err}"

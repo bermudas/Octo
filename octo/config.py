@@ -221,6 +221,16 @@ GITHUB_COPILOT_BASE_URL = os.getenv(
     "GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com"
 )
 
+# --- GitHub Copilot CLI (subprocess) ---
+# Override the binary command. Default: auto-detect (gh copilot or copilot in PATH).
+# Examples: "copilot", "gh copilot --"
+COPILOT_CLI_PATH = os.getenv("COPILOT_CLI_PATH", "")
+# JSON array of extra flags to pass on every invocation.
+# Example: '["--allow-all", "--enable-all-github-mcp-tools"]'
+COPILOT_CLI_EXTRA_FLAGS = os.getenv("COPILOT_CLI_EXTRA_FLAGS", "")
+# Subprocess timeout in seconds
+COPILOT_CLI_TIMEOUT = int(os.getenv("COPILOT_CLI_TIMEOUT", "120"))
+
 # --- Google Gemini ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
 
@@ -228,7 +238,8 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", 
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "")
 
 # --- Provider override (optional) ---
-# Auto-detected from model name if not set. Values: anthropic, bedrock, openai, azure, github, gemini, local
+# Auto-detected from model name if not set.
+# Values: anthropic, bedrock, openai, azure, github, copilot, copilot-cli, gemini, local
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")
 
 # --- Model tiers ---

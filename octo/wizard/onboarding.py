@@ -25,8 +25,9 @@ _PROVIDERS = [
     ("4", "azure", "Azure OpenAI", "Azure-hosted models — requires endpoint + key"),
     ("5", "github", "GitHub Models", "GPT, Claude, Mistral, Llama via GitHub PAT"),
     ("6", "copilot", "GitHub Copilot Enterprise", "Copilot API via GITHUB_TOKEN (gho_ OAuth token)"),
-    ("7", "gemini", "Google Gemini", "Gemini 2.5 Flash/Pro — requires GOOGLE_API_KEY"),
-    ("8", "local", "Local / Custom", "vLLM, Ollama, llama.cpp — OpenAI-compatible endpoint"),
+    ("7", "copilot-cli", "GitHub Copilot CLI", "Subprocess via `gh copilot` — unlocks gpt-5.x, claude-sonnet-4.6, etc."),
+    ("8", "gemini", "Google Gemini", "Gemini 2.5 Flash/Pro — requires GOOGLE_API_KEY"),
+    ("9", "local", "Local / Custom", "vLLM, Ollama, llama.cpp — OpenAI-compatible endpoint"),
 ]
 
 _MCP_TEMPLATES: dict[str, dict[str, Any]] = {
@@ -171,7 +172,7 @@ def _select_provider(preselected: str | None) -> str:
         table.add_row(num, name, desc)
     console.print(table)
 
-    choice = Prompt.ask("  Provider", choices=["1", "2", "3", "4", "5", "6", "7"], default="1")
+    choice = Prompt.ask("  Provider", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="1")
     return {p[0]: p[1] for p in _PROVIDERS}[choice]
 
 
@@ -239,6 +240,30 @@ def _collect_credentials(provider: str) -> dict[str, str]:
             else:
                 console.print("  [dim]Create a PAT at github.com/settings/tokens with 'models:read' scope[/dim]")
             creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub Token", password=True)
+
+    elif provider == "copilot-cli":
+        import shutil
+        from octo.models import _resolve_copilot_cli_cmd
+
+        detected_cmd = " ".join(_resolve_copilot_cli_cmd(""))
+        if shutil.which(detected_cmd.split()[0]):
+            console.print(f"  [dim]Detected Copilot CLI: {detected_cmd}[/dim]")
+        else:
+            console.print("  [yellow]Warning: Copilot CLI not found in PATH. Install via `gh extension install github/gh-copilot`[/yellow]")
+
+        path_override = Prompt.ask(
+            "  CLI command override (press Enter to auto-detect)",
+            default="",
+        )
+        if path_override.strip():
+            creds["COPILOT_CLI_PATH"] = path_override.strip()
+
+        console.print()
+        console.print("  [dim]Extra flags (e.g. --allow-all, --enable-all-github-mcp-tools, --additional-mcp-config)[/dim]")
+        console.print("  [dim]Enter as JSON array: [\"--allow-all\"] or space-separated: --allow-all[/dim]")
+        extra = Prompt.ask("  Extra flags (optional, press Enter to skip)", default="")
+        if extra.strip():
+            creds["COPILOT_CLI_EXTRA_FLAGS"] = extra.strip()
 
     elif provider == "gemini":
         existing = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
@@ -399,7 +424,7 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
     sections: list[tuple[str, str, list[str]]] = [
         (
             "LLM Provider",
-            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github, copilot, gemini, local",
+            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github, copilot, copilot-cli, gemini, local",
             ["LLM_PROVIDER"],
         ),
         ("Anthropic", "Direct Anthropic API access", ["ANTHROPIC_API_KEY"]),
@@ -419,6 +444,16 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
             "GitHub Copilot Enterprise",
             "Copilot chat completions API (reuses GITHUB_TOKEN OAuth token)",
             ["GITHUB_COPILOT_BASE_URL"],
+        ),
+        (
+            "GitHub Copilot CLI",
+            "Subprocess provider — delegates to `gh copilot` or `copilot` binary\n"
+            "# COPILOT_CLI_PATH: override binary (e.g. 'copilot' or 'gh copilot --')\n"
+            "# COPILOT_CLI_EXTRA_FLAGS: JSON array of extra flags\n"
+            "#   e.g. [\"--allow-all\",\"--enable-all-github-mcp-tools\"]\n"
+            "#        [\"--additional-mcp-config\",\"/path/to/mcp.json\"]\n"
+            "# COPILOT_CLI_TIMEOUT: subprocess timeout in seconds (default: 120)",
+            ["COPILOT_CLI_PATH", "COPILOT_CLI_EXTRA_FLAGS", "COPILOT_CLI_TIMEOUT"],
         ),
         ("Google Gemini", "Gemini 2.5 Flash/Pro", ["GOOGLE_API_KEY"]),
         (

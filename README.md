@@ -13,7 +13,7 @@ Octo orchestrates AI agents from multiple projects through a single chat interfa
 **Required:**
 - Python 3.11 or higher
 - Node.js 18+ (most MCP servers use `npx`)
-- At least one LLM provider configured (Anthropic, AWS Bedrock, OpenAI, Azure OpenAI, or GitHub Models)
+- At least one LLM provider configured (Anthropic, AWS Bedrock, OpenAI, Azure OpenAI, GitHub Models, or GitHub Copilot CLI)
 
 **Optional:**
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — enables project workers that delegate tasks via `claude -p`
@@ -321,7 +321,7 @@ octo/                   # Python package
 ├── heartbeat.py        # proactive AI: heartbeat timer + cron scheduler
 ├── mcp_manager.py      # live MCP server management
 ├── middleware.py        # tool error handling, result truncation, summarization
-├── models.py           # model factory (5 providers, auto-detection)
+├── models.py           # model factory (8 providers, auto-detection)
 ├── sessions.py         # session registry
 ├── telegram.py         # Telegram bot transport
 ├── ui.py               # Rich console UI
@@ -356,6 +356,15 @@ DEFAULT_MODEL=gpt-4o
 # --- Option D: GitHub Models (free tier available) ---
 GITHUB_TOKEN=ghp_...
 DEFAULT_MODEL=github/openai/gpt-4.1
+
+# --- Option E: GitHub Copilot CLI (unlocks gpt-5.x, claude-sonnet-4.6, etc.) ---
+# No API key needed — uses `gh auth` (OAuth via GitHub CLI)
+# Requires: gh extension install github/gh-copilot
+DEFAULT_MODEL=copilot-cli/gpt-4.1
+HIGH_TIER_MODEL=copilot-cli/claude-sonnet-4.6
+LOW_TIER_MODEL=copilot-cli/gpt-5-mini
+# Optional: extra flags passed to every CLI call
+# COPILOT_CLI_EXTRA_FLAGS=["--allow-all","--enable-all-github-mcp-tools"]
 ```
 
 Additional configuration (all optional):
@@ -404,6 +413,8 @@ The model factory (`octo/models.py`) auto-detects the provider from the model na
 | Model name pattern | Provider |
 |---|---|
 | `github/*` | GitHub Models |
+| `copilot/*` | GitHub Copilot Enterprise API |
+| `copilot-cli/*` | GitHub Copilot CLI (subprocess) |
 | `eu.anthropic.*`, `us.anthropic.*` | AWS Bedrock |
 | `claude-*` | Anthropic direct |
 | `gpt-*`, `o1-*`, `o3-*` | OpenAI |
