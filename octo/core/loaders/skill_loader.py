@@ -217,7 +217,12 @@ def _import_name(pip_pkg: str) -> str:
 
 def check_missing_deps(skill: SkillConfig) -> list[str]:
     """Return list of pip specifiers whose packages are not importable."""
-    python_deps: list[str] = skill.dependencies.get("python", [])
+    deps = skill.dependencies
+    if isinstance(deps, list):
+        # Flat list format: treat all entries as Python pip specifiers
+        python_deps: list[str] = deps
+    else:
+        python_deps: list[str] = deps.get("python", [])
     if not python_deps:
         return []
 

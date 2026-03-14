@@ -31,6 +31,30 @@ _SAMPLE_RATE = 44100
 _QUALITY_SUFFIX = " in a very close-sounding recording with almost no background noise"
 
 _VOICES: dict[str, dict] = {
+    "John": {
+        # Fish Speech voice cloning with 3 reference samples
+        "engine": "fish-speech",
+        "references_file": "/Users/arozumenko/Development/octomanager/.octo/workspace/2026-03-06/john-references.json",
+        "seed": 123,
+    },
+    "Vivian": {
+        # Fish Speech voice cloning from Qwen3-TTS generated samples
+        "engine": "fish-speech",
+        "references_file": "/Users/arozumenko/Development/octomanager/.octo/workspace/2026-03-06/vivian-references.json",
+        "seed": 456,
+    },
+    "Ryan": {
+        # Fish Speech voice cloning from Qwen3-TTS generated samples
+        "engine": "fish-speech",
+        "references_file": "/Users/arozumenko/Development/octo/.octo/workspace/voice-library/ryan-references.json",
+        "seed": 789,
+    },
+    "Anna": {
+        # Fish Speech voice cloning from Qwen3-TTS Ono_Anna speaker (all 4 refs, amplified +6dB)
+        "engine": "fish-speech",
+        "references_file": "/Users/arozumenko/Development/octomanager/.octo/workspace/voice-library/anna-references.json",
+        "seed": 321,
+    },
     "Jon": {
         "description": f"Jon's voice is monotone yet slightly fast in delivery, with a very clear audio quality{_QUALITY_SUFFIX}.",
         "seed": 42,
@@ -181,6 +205,62 @@ def _resolve_voice(voice: str, instruct: str | None = None, seed: int | None = N
     return description, final_seed
 
 
+# ── Fish Speech synthesis ────────────────────────────────────────────
+
+def _synthesize_fish_speech(
+    text: str,
+    references_file: str,
+    normalize_peak: float = 0.707,  # -3dB target peak
+) -> bytes:
+    """Synthesize using Fish Speech API with voice cloning references.
+    
+    Args:
+        text: Text to synthesize
+        references_file: Path to references JSON
+        normalize_peak: Target peak level (0.0-1.0). Default 0.707 (-3dB)
+    """
+    import json
+    import requests
+    import numpy as np
+    import soundfile as sf
+    import io
+
+    # Load references from file
+    with open(references_file, 'r') as f:
+        data = json.load(f)
+    
+    payload = {
+        "text": text,
+        "references": data["references"],
+        "normalize": True,
+        "format": "wav"
+    }
+    
+    try:
+        response = requests.post('http://127.0.0.1:8080/v1/tts', json=payload, timeout=120)
+    except Exception as e:
+        raise RuntimeError(f"Fish Speech TTS request failed: {e}")
+    
+    if response.status_code != 200:
+        error_text = response.text[:500]  # Truncate long errors
+        raise RuntimeError(f"Fish Speech TTS failed: {response.status_code} - {error_text}")
+    
+    # Post-process: amplify to target peak
+    audio, sr = sf.read(io.BytesIO(response.content))
+    peak = np.abs(audio).max()
+    
+    if peak > 0 and peak < normalize_peak:
+        # Amplify to target peak
+        audio = audio * (normalize_peak / peak)
+        
+        # Re-encode to WAV
+        buf = io.BytesIO()
+        sf.write(buf, audio, sr, format='WAV')
+        return buf.getvalue()
+    
+    return response.content
+
+
 # ── Synchronous synthesis ────────────────────────────────────────────
 
 def _synthesize_sync(
@@ -191,6 +271,18 @@ def _synthesize_sync(
     seed: int | None = None,
 ) -> bytes:
     """Run TTS inference synchronously. Returns WAV bytes."""
+    # Map OpenAI alias to voice name
+    name = _VOICE_MAP.get(voice, voice)
+    profile = _VOICES.get(name)
+    
+    # Check if this voice uses Fish Speech
+    if profile and profile.get("engine") == "fish-speech":
+        references_file = profile.get("references_file")
+        if not references_file:
+            raise ValueError(f"Voice {name} configured for Fish Speech but no references_file provided")
+        return _synthesize_fish_speech(text, references_file)
+    
+    # Otherwise use ParlerTTS
     from transformers import set_seed
     import soundfile as sf
 
