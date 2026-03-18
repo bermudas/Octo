@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -42,6 +43,15 @@ def _is_authorized(user_id: str) -> bool:
         return True
     users = _load_authorized_users()
     return user_id in users
+
+
+def _bootstrap_user_workspace(user_id: str) -> None:
+    """Ensure the per-user workspace directory exists (idempotent)."""
+    try:
+        from octo.config import get_user_dir
+        get_user_dir(user_id)
+    except Exception:
+        pass  # non-critical — workspace created lazily later
 
 
 def _wrap_markdown_tables(text: str) -> str:
@@ -224,25 +234,35 @@ class TelegramTransport:
         swarm_role: str = "worker",
         swarm_name: str = "",
         group_chat_id: int | None = None,
+        # Multi-tenant: pre-fetched MCP tools for per-user graph builds
+        mcp_tools: list | None = None,
+        mcp_tools_by_server: dict[str, list] | None = None,
     ) -> None:
-        self.graph_app = graph_app
-        self.thread_id = thread_id
-        self.on_message = on_message    # called when user message arrives
-        self.on_response = on_response  # called when AI response is ready
-        self.callbacks = callbacks or [] # LangChain callbacks (e.g. CLI tool panels)
-        self.graph_lock = graph_lock     # shared lock to prevent races with heartbeat/cron
-        self.on_command = on_command     # async (cmd, args) -> str | None for slash commands
+        self.graph_app = graph_app          # owner's / shared graph (fallback)
+        self.thread_id = thread_id          # owner's base thread ID
+        self.on_message = on_message        # called when user message arrives
+        self.on_response = on_response      # called when AI response is ready
+        self.callbacks = callbacks or []    # LangChain callbacks (e.g. CLI tool panels)
+        self.graph_lock = graph_lock        # shared lock to prevent races
+        self.on_command = on_command        # async (cmd, args) -> str | None
         self._app: Application | None = None
         # Generic reply router: telegram_msg_id → async handler(update, text)
-        # Used by VP notifications, background tasks, and any future reply-routed feature.
         self._reply_handlers: dict[int, Callable[[Update, str], Awaitable[None]]] = {}
-        # Swarm group mode — multiple bots in one Telegram group
+        # Swarm group mode
         self._swarm_mode = swarm_mode
-        self._swarm_role = swarm_role     # "supervisor" catches unaddressed msgs
-        self._swarm_name = swarm_name     # for name-based mention detection
+        self._swarm_role = swarm_role
+        self._swarm_name = swarm_name
         self._group_chat_id = group_chat_id
-        self._bot_username: str = ""      # resolved at start() via get_me()
-        self._bot_id: int = 0             # resolved at start() via get_me()
+        self._bot_username: str = ""
+        self._bot_id: int = 0
+        # Multi-tenant: MCP tools reused for per-user graph builds
+        self._mcp_tools: list = mcp_tools or []
+        self._mcp_tools_by_server: dict[str, list] = mcp_tools_by_server or {}
+        # Per-user graph cache: user_id → (app, mtime_float)
+        # Owner uses self.graph_app; authorized users get their own compiled graph.
+        self._user_graphs: dict[str, tuple[Any, float]] = {}
+        # Per-user active graph locks (prevent concurrent builds for the same user)
+        self._user_build_locks: dict[str, asyncio.Lock] = {}
 
     def _is_group_chat(self, update: Update) -> bool:
         """Check if the message comes from a group/supergroup chat."""
@@ -332,6 +352,81 @@ class TelegramTransport:
 
         return False
 
+    # ------------------------------------------------------------------
+    # Multi-tenant helpers
+    # ------------------------------------------------------------------
+
+    def _user_thread_id(self, sender_id: str) -> str:
+        """Return a stable per-user thread ID.
+
+        Owner reuses the base thread so their CLI and Telegram sessions are
+        the same checkpoint.  Authorized users get an isolated thread so
+        their history, /clear, and /compact are independent.
+        """
+        if TELEGRAM_OWNER_ID and sender_id == TELEGRAM_OWNER_ID:
+            return self.thread_id
+        return f"{self.thread_id}:{sender_id}"
+
+    def _user_graph_mtime(self, user_id: str) -> float:
+        """Return the latest mtime of files in the user's agents dir."""
+        from octo.config import get_user_agents_dir
+        agents_dir = get_user_agents_dir(user_id)
+        if not agents_dir.is_dir():
+            return 0.0
+        try:
+            mtimes = [
+                p.stat().st_mtime
+                for p in agents_dir.rglob("AGENT.md")
+            ]
+            return max(mtimes, default=0.0)
+        except OSError:
+            return 0.0
+
+    async def _get_or_build_user_graph(self, user_id: str) -> Any:
+        """Return a compiled LangGraph app for this user.
+
+        Owner always gets the shared graph (same as CLI session).
+        Authorized users get a lazily-compiled graph that merges shared +
+        user-specific agents.  The cached graph is invalidated whenever the
+        user's agents dir changes (mtime check).
+        """
+        if TELEGRAM_OWNER_ID and user_id == TELEGRAM_OWNER_ID:
+            return self.graph_app
+
+        # Ensure a per-user build lock exists (avoids concurrent rebuilds)
+        if user_id not in self._user_build_locks:
+            self._user_build_locks[user_id] = asyncio.Lock()
+
+        async with self._user_build_locks[user_id]:
+            current_mtime = self._user_graph_mtime(user_id)
+            cached = self._user_graphs.get(user_id)
+            if cached is not None:
+                cached_app, cached_mtime = cached
+                if cached_mtime == current_mtime:
+                    return cached_app
+
+            # Build a new graph for this user
+            try:
+                from octo.core.graph import build_graph
+                from octo.core.loaders.agent_loader import load_agents_for_user
+
+                user_agents = load_agents_for_user(user_id)
+                app, _, _ = await build_graph(
+                    mcp_tools=self._mcp_tools,
+                    mcp_tools_by_server=self._mcp_tools_by_server,
+                    agent_configs=user_agents,
+                )
+                self._user_graphs[user_id] = (app, current_mtime)
+                logger.info(
+                    "Built graph for user %s with %d agents", user_id, len(user_agents),
+                )
+                return app
+            except Exception:
+                logger.exception(
+                    "Failed to build per-user graph for %s, falling back to shared", user_id,
+                )
+                return self.graph_app
+
     async def send_to_peer(self, peer_bot_username: str, message: str) -> None:
         """Send a message in the group chat mentioning a peer Octo bot.
 
@@ -365,18 +460,15 @@ class TelegramTransport:
         except Exception:
             pass  # silently stop if chat action fails
 
-    async def _trim_history_if_needed(self, config: dict) -> None:
-        """Trim checkpoint history if it exceeds TELEGRAM_HISTORY_LIMIT.
-
-        Lighter-weight than auto_compact — removes old messages without LLM
-        summarization. Runs inside graph lock before every Telegram invocation.
-        """
+    async def _trim_history_if_needed(self, config: dict, graph_app: Any = None) -> None:
+        """Trim checkpoint history if it exceeds TELEGRAM_HISTORY_LIMIT."""
         from octo.config import TELEGRAM_HISTORY_LIMIT
         if not TELEGRAM_HISTORY_LIMIT:
             return
 
+        app = graph_app if graph_app is not None else self.graph_app
         try:
-            state = await self.graph_app.aget_state(config)
+            state = await app.aget_state(config)
             messages = state.values.get("messages", [])
 
             if len(messages) <= TELEGRAM_HISTORY_LIMIT:
@@ -400,7 +492,7 @@ class TelegramTransport:
                 )
             )
             remove_ops = [RemoveMessage(id=m.id) for m in removable]
-            await self.graph_app.aupdate_state(
+            await app.aupdate_state(
                 config, {"messages": remove_ops + [marker]},
             )
             logger.info(
@@ -410,19 +502,32 @@ class TelegramTransport:
         except Exception:
             logger.debug("Telegram history trim failed (non-blocking)", exc_info=True)
 
-    async def _invoke_graph(self, chat_id: int, user_content: str | list, sender_name: str = "") -> str:
+    async def _invoke_graph(self, chat_id: int, user_content: str | list, sender_name: str = "", sender_id: str = "") -> str:
         """Send user content through the graph with typing indicator.
 
         Args:
-            chat_id: Telegram chat ID (for typing indicator).
+            chat_id: Telegram chat ID (for typing indicator and reply routing).
             user_content: String or list of content blocks (multimodal).
             sender_name: Display name for channel tagging.
+            sender_id: Telegram user ID string (used for per-user thread + graph).
         """
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(self._send_typing(chat_id, stop_typing))
 
         try:
-            config = {"configurable": {"thread_id": self.thread_id}}
+            # Per-user thread ID and graph
+            thread_id = self._user_thread_id(sender_id) if sender_id else self.thread_id
+            graph_app = await self._get_or_build_user_graph(sender_id) if sender_id else self.graph_app
+
+            config: dict[str, Any] = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    # reply_chat_id lets tools (escalate_question, bg tasks) route
+                    # async notifications back to the correct Telegram user.
+                    "reply_chat_id": chat_id,
+                    "sender_id": sender_id,
+                },
+            }
             if self.callbacks:
                 config["callbacks"] = self.callbacks
 
@@ -445,9 +550,9 @@ class TelegramTransport:
             if self.graph_lock:
                 await self.graph_lock.acquire()
             try:
-                await self._trim_history_if_needed(config)
+                await self._trim_history_if_needed(config, graph_app=graph_app)
                 result = await invoke_with_retry(
-                    self.graph_app,
+                    graph_app,
                     {"messages": [HumanMessage(content=tagged)]},
                     config,
                 )
@@ -603,7 +708,8 @@ class TelegramTransport:
                 pass
 
             response_text = await self._invoke_graph(
-                update.message.chat_id, user_content, sender_name=sender,
+                update.message.chat_id, user_content,
+                sender_name=sender, sender_id=sender_id,
             )
             try:
                 await status_msg.delete()
@@ -681,7 +787,10 @@ class TelegramTransport:
         try:
             # Send a status message so the user knows we're working on it
             status_msg = await update.message.reply_text("Processing...")
-            response_text = await self._invoke_graph(update.message.chat_id, user_text, sender_name=sender)
+            response_text = await self._invoke_graph(
+                update.message.chat_id, user_text,
+                sender_name=sender, sender_id=sender_id,
+            )
             # Delete the status message before sending the real response
             try:
                 await status_msg.delete()
@@ -934,7 +1043,10 @@ class TelegramTransport:
                 await status_msg.edit_text("Processing...")
             except Exception:
                 pass
-            response_text = await self._invoke_graph(update.message.chat_id, user_text, sender_name=sender)
+            response_text = await self._invoke_graph(
+                update.message.chat_id, user_text,
+                sender_name=sender, sender_id=sender_id,
+            )
             try:
                 await status_msg.delete()
             except Exception:
@@ -966,6 +1078,7 @@ class TelegramTransport:
             target_name = target.full_name or target.username or target_id
             users[target_id] = target_name
             _save_authorized_users(users)
+            _bootstrap_user_workspace(target_id)
             await update.message.reply_text(f"Authorized: {target_name} ({target_id})")
             return
 
@@ -984,6 +1097,7 @@ class TelegramTransport:
         target_name = " ".join(args[1:]) if len(args) > 1 else target_id
         users[target_id] = target_name
         _save_authorized_users(users)
+        _bootstrap_user_workspace(target_id)
         await update.message.reply_text(f"Authorized: {target_name} ({target_id})")
 
     async def _handle_revoke(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1010,24 +1124,128 @@ class TelegramTransport:
         else:
             await update.message.reply_text(f"User {target_id} not found.")
 
-    def _target_chat_id(self) -> int | None:
+    async def _handle_myagents(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /myagents — list this user's effective agent set (shared + personal overrides)."""
+        if not update.message or not update.message.from_user:
+            return
+
+        sender_id = str(update.message.from_user.id)
+        if not _is_authorized(sender_id):
+            await update.message.reply_text("Not authorized.")
+            return
+
+        try:
+            from octo.core.loaders.agent_loader import load_agents_for_user
+            from octo.config import get_user_agents_dir
+            agents = load_agents_for_user(sender_id)
+            user_names = {
+                a.parent.name
+                for a in get_user_agents_dir(sender_id).rglob("AGENT.md")
+            } if get_user_agents_dir(sender_id).is_dir() else set()
+
+            lines = ["**Your effective agents:**\n"]
+            for a in sorted(agents, key=lambda x: x.name):
+                tag = " *(personal)*" if a.source_project.startswith("user:") else ""
+                lines.append(f"• **{a.name}**{tag} — {a.description[:80]}")
+            lines.append(f"\nPersonal overrides: `~/.octo/users/{sender_id}/agents/`")
+            await self._reply(update, "\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(f"Failed to list agents: {e}")
+
+    async def _handle_myprojects(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /myprojects — list this user's effective project set."""
+        if not update.message or not update.message.from_user:
+            return
+
+        sender_id = str(update.message.from_user.id)
+        if not _is_authorized(sender_id):
+            await update.message.reply_text("Not authorized.")
+            return
+
+        try:
+            from octo.config import load_user_projects, PROJECTS, get_user_projects_dir
+            user_projs = load_user_projects(sender_id)
+            shared_names = set(PROJECTS.keys())
+
+            lines = ["**Your effective projects:**\n"]
+            for name, proj in sorted(user_projs.items()):
+                tag = " *(personal)*" if name not in shared_names else ""
+                desc = proj.description[:60] if proj.description else proj.path
+                lines.append(f"• **{name}**{tag} — {desc}")
+            lines.append(f"\nPersonal projects: `~/.octo/users/{sender_id}/projects/`")
+            await self._reply(update, "\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(f"Failed to list projects: {e}")
+
+    async def _handle_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /users — owner-only, show all authorized users and workspace status."""
+        if not update.message or not update.message.from_user:
+            return
+
+        sender_id = str(update.message.from_user.id)
+        if not TELEGRAM_OWNER_ID or sender_id != TELEGRAM_OWNER_ID:
+            await update.message.reply_text("Only the owner can use /users.")
+            return
+
+        from octo.config import USERS_DIR, get_user_agents_dir
+
+        # args: empty (list) | <user_id> reset
+        args = context.args or []
+        if len(args) == 2 and args[1] == "reset":
+            target_id = args[0]
+            import shutil
+            user_d = USERS_DIR / target_id
+            if user_d.is_dir():
+                shutil.rmtree(user_d)
+                # Evict from graph cache
+                self._user_graphs.pop(target_id, None)
+                await update.message.reply_text(f"Workspace reset for user {target_id}.")
+            else:
+                await update.message.reply_text(f"No workspace found for {target_id}.")
+            return
+
+        users = _load_authorized_users()
+        if not users:
+            await update.message.reply_text("No authorized users.")
+            return
+
+        lines = ["**Authorized users + workspace status:**\n"]
+        for uid, name in users.items():
+            agent_count = sum(
+                1 for _ in get_user_agents_dir(uid).rglob("AGENT.md")
+            ) if get_user_agents_dir(uid).is_dir() else 0
+            cache_status = "cached" if uid in self._user_graphs else "not built"
+            thread = self._user_thread_id(uid)
+            lines.append(
+                f"• **{name}** (`{uid}`)\n"
+                f"  thread: `{thread}`  agents: {agent_count}  graph: {cache_status}"
+            )
+        lines.append("\nUse `/users <user_id> reset` to wipe a user's workspace.")
+        await self._reply(update, "\n".join(lines))
+
+    def _target_chat_id(self, user_chat_id: int | None = None) -> int | None:
         """Resolve the chat ID for outbound messages.
 
-        In swarm group mode, target the shared group chat.
-        Otherwise, target the owner's private chat.
+        Priority:
+        1. ``user_chat_id`` — explicit per-user override (used when we know who
+           triggered the underlying task).
+        2. Swarm group chat — when running in swarm group mode.
+        3. Owner's private chat — fallback (preserves original behaviour).
         """
+        if user_chat_id is not None:
+            return user_chat_id
         if self._swarm_mode and self._group_chat_id:
             return self._group_chat_id
         if TELEGRAM_OWNER_ID:
             return int(TELEGRAM_OWNER_ID)
         return None
 
-    async def send_proactive(self, text: str, source: str = "") -> None:
-        """Send a proactive message to the owner or swarm group."""
+    async def send_proactive(self, text: str, source: str = "", user_chat_id: int | None = None) -> None:
+        """Send a proactive message to the owner, swarm group, or a specific user."""
         if not self._app:
             return
 
-        chat_id = self._target_chat_id()
+        chat_id = self._target_chat_id(user_chat_id)
         if not chat_id:
             return
 
@@ -1051,17 +1269,17 @@ class TelegramTransport:
         self,
         text: str,
         on_reply: Callable[[Update, str], Awaitable[None]],
+        user_chat_id: int | None = None,
     ) -> None:
-        """Send a message to the owner and register a reply handler.
+        """Send a message and register a reply handler.
 
         When the user replies to this Telegram message, ``on_reply(update, text)``
-        is called.  This is the generic mechanism used by VP notifications,
-        background tasks, and any future reply-routed feature.
+        is called.  ``user_chat_id`` targets a specific user instead of the owner.
         """
         if not self._app:
             return
 
-        chat_id = self._target_chat_id()
+        chat_id = self._target_chat_id(user_chat_id)
         if not chat_id:
             return
         sent_msg = None
@@ -1201,6 +1419,9 @@ class TelegramTransport:
         self._app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         self._app.add_handler(CommandHandler("authorize", self._handle_authorize))
         self._app.add_handler(CommandHandler("revoke", self._handle_revoke))
+        self._app.add_handler(CommandHandler("myagents", self._handle_myagents))
+        self._app.add_handler(CommandHandler("myprojects", self._handle_myprojects))
+        self._app.add_handler(CommandHandler("users", self._handle_users))
         # Non-slash text → graph. Slash commands not caught by CommandHandlers
         # above are routed via a separate handler to on_command callback.
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
@@ -1235,6 +1456,8 @@ class TelegramTransport:
             BotCommand("compact", "Free context space"),
             BotCommand("context", "Context window usage"),
             BotCommand("agents", "List loaded agents"),
+            BotCommand("myagents", "My agents (shared + personal)"),
+            BotCommand("myprojects", "My projects (shared + personal)"),
             BotCommand("skills", "List / manage skills"),
             BotCommand("mcp", "MCP server status / management"),
             BotCommand("model", "Show current model"),
@@ -1242,6 +1465,7 @@ class TelegramTransport:
             BotCommand("restart", "Cold-restart process"),
             BotCommand("authorize", "Authorize a user (owner only)"),
             BotCommand("revoke", "Revoke user access (owner only)"),
+            BotCommand("users", "Show authorized users & workspaces (owner only)"),
         ]
         if self._swarm_mode:
             commands.append(BotCommand("swarm", "Swarm status"))

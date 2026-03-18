@@ -195,6 +195,46 @@ import logging
 _log = logging.getLogger(__name__)
 
 
+def load_agents_for_user(user_id: str) -> list[AgentConfig]:
+    """Return agents merged from shared global dirs + user-specific overrides.
+
+    Resolution order (last writer wins on name collision):
+    1. Shared project agents  (AGENT_DIRS)
+    2. Shared Octo agents     (.octo/agents/)
+    3. User-specific agents   (.octo/users/{user_id}/agents/)
+
+    A user agent with the same name as a shared one **overrides** it.
+    User-only names are additive.
+    """
+    from octo.config import get_user_agents_dir
+
+    shared_project = load_agents()
+    shared_octo = load_octo_agents()
+
+    user_agents_dir = get_user_agents_dir(user_id)
+    user_specific: list[AgentConfig] = []
+    if user_agents_dir.is_dir():
+        for agent_dir in sorted(user_agents_dir.iterdir()):
+            if not agent_dir.is_dir():
+                continue
+            agent_file = agent_dir / "AGENT.md"
+            if not agent_file.is_file():
+                # Also support flat .md files (name.md) in the user agents dir
+                continue
+            cfg = _parse_agent_md(agent_file)
+            if cfg:
+                cfg.source_project = f"user:{user_id}"
+                user_specific.append(cfg)
+
+    merged: dict[str, AgentConfig] = {}
+    for a in shared_project + shared_octo:
+        merged[a.name] = a
+    for a in user_specific:
+        merged[a.name] = a  # user overrides shared
+
+    return list(merged.values())
+
+
 async def load_agents_from_storage(storage: Any, prefix: str = "agents") -> list[AgentConfig]:
     """Load AGENT.md files from a StorageBackend (S3, filesystem, etc.).
 

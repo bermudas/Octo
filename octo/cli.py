@@ -332,6 +332,8 @@ async def _chat_loop(
                 swarm_role=SWARM_ROLE if _tg_swarm_mode else "worker",
                 swarm_name=_tg_swarm_name,
                 group_chat_id=SWARM_TELEGRAM_GROUP_ID if _tg_swarm_mode else None,
+                mcp_tools=mcp_tools,
+                mcp_tools_by_server=mcp_tools_by_server,
             )
             await tg.start()
             set_telegram_transport(tg)
