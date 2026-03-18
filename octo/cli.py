@@ -679,7 +679,7 @@ async def _chat_loop(
                 return f"Conversation cleared. New thread: `{thread_id}`"
 
             if cmd == "compact":
-                from langchain_core.messages import RemoveMessage, SystemMessage
+                from langchain_core.messages import RemoveMessage
                 from langchain_core.messages.utils import count_tokens_approximately
                 from octo.retry import _sanitize_compact_boundary, _dump_tool_messages
 
@@ -716,7 +716,8 @@ async def _chat_loop(
                     + "\n".join(summary_lines[-100:])
                 )
                 summary_response = await summary_model.ainvoke(summary_prompt)
-                summary_msg = SystemMessage(
+                from langchain_core.messages import AIMessage
+                summary_msg = AIMessage(
                     content=(
                         "[Conversation summary — earlier messages were compacted]\n\n"
                         + summary_response.content
@@ -1541,7 +1542,7 @@ async def _chat_loop(
 
                 if user_input == "/compact":
                     try:
-                        from langchain_core.messages import RemoveMessage, SystemMessage
+                        from langchain_core.messages import RemoveMessage
                         from langchain_core.messages.utils import count_tokens_approximately
 
                         state = await app.aget_state(config)
@@ -1588,7 +1589,8 @@ async def _chat_loop(
                         )
                         ui.print_info("Summarizing conversation...")
                         summary_response = await summary_model.ainvoke(summary_prompt)
-                        summary_msg = SystemMessage(
+                        from langchain_core.messages import AIMessage
+                        summary_msg = AIMessage(
                             content=(
                                 "[Conversation summary — earlier messages were compacted]\n\n"
                                 + summary_response.content

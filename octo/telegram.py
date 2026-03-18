@@ -382,7 +382,7 @@ class TelegramTransport:
             if len(messages) <= TELEGRAM_HISTORY_LIMIT:
                 return
 
-            from langchain_core.messages import RemoveMessage, SystemMessage
+            from langchain_core.messages import RemoveMessage, AIMessage
             from octo.retry import _sanitize_compact_boundary
 
             split_idx = _sanitize_compact_boundary(
@@ -392,7 +392,7 @@ class TelegramTransport:
             if not removable:
                 return
 
-            marker = SystemMessage(
+            marker = AIMessage(
                 content=(
                     f"[Telegram history trimmed — {len(removable)} older "
                     f"messages removed to stay within {TELEGRAM_HISTORY_LIMIT} "
