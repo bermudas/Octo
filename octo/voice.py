@@ -26,9 +26,12 @@ _OUTPUT_FORMAT = "mp3_44100_128"
 
 # ── Local engine availability (lazy) ─────────────────────────────────
 _local_available: bool | None = None
+_local_stt_available: bool | None = None
+_local_tts_available: bool | None = None
 
 
 def _has_local_voice() -> bool:
+    """Return True if any local voice backend is available (STT or TTS)."""
     global _local_available
     if _local_available is None:
         try:
@@ -37,6 +40,30 @@ def _has_local_voice() -> bool:
         except ImportError:
             _local_available = False
     return _local_available
+
+
+def _has_local_stt() -> bool:
+    """Return True if a local STT backend is available."""
+    global _local_stt_available
+    if _local_stt_available is None:
+        try:
+            from octo.core.voice import stt_available
+            _local_stt_available = stt_available()
+        except ImportError:
+            _local_stt_available = False
+    return _local_stt_available
+
+
+def _has_local_tts() -> bool:
+    """Return True if local TTS deps are available."""
+    global _local_tts_available
+    if _local_tts_available is None:
+        try:
+            from octo.core.voice import tts_available
+            _local_tts_available = tts_available()
+        except ImportError:
+            _local_tts_available = False
+    return _local_tts_available
 
 
 def _active_engine() -> str:
@@ -69,18 +96,17 @@ def engine_info() -> dict[str, str]:
     """Return current engine configuration for /voice status."""
     engine = _active_engine()
     if engine == "local":
-        # Check STT separately (may not have mlx-whisper installed)
+        stt_ready = _has_local_stt()
+        tts_ready = _has_local_tts()
         try:
             from octo.core.voice.stt import _detect_backend
-            stt_backend = _detect_backend()
-            stt_ready = True
+            stt_backend = _detect_backend() if stt_ready else "none"
         except ImportError:
             stt_backend = "none"
-            stt_ready = False
         return {
-            "tts": "local (ParlerTTS)",
+            "tts": "local (ParlerTTS)" if tts_ready else "unavailable",
             "stt": f"local ({stt_backend})" if stt_ready else "unavailable",
-            "tts_ready": "True",
+            "tts_ready": str(tts_ready),
             "stt_ready": str(stt_ready),
         }
     if engine == "elevenlabs":
@@ -103,9 +129,7 @@ async def transcribe(audio_data: bytes) -> str:
 
     Returns transcribed text, or empty string on failure.
     """
-    engine = _active_engine()
-
-    if engine == "local":
+    if _has_local_stt():
         try:
             from octo.core.voice import local_transcribe
             return await local_transcribe(audio_data)
@@ -114,7 +138,8 @@ async def transcribe(audio_data: bytes) -> str:
         except Exception:
             logger.exception("Local STT error")
 
-    if engine == "elevenlabs" or _active_engine() != "none":
+    from octo.config import ELEVENLABS_API_KEY
+    if ELEVENLABS_API_KEY:
         return await _transcribe_elevenlabs(audio_data)
 
     return ""
@@ -144,6 +169,9 @@ async def synthesize(
     engine = _active_engine()
 
     if engine == "local":
+        if not _has_local_tts():
+            logger.warning("Local TTS deps not installed (parler_tts/soundfile); use ElevenLabs or install octo-agent[voice]")
+            return None
         try:
             from octo.core.voice import local_synthesize
             return await local_synthesize(text, voice=voice, instruct=instruct, language=language)
@@ -165,8 +193,8 @@ async def synthesize_multi(
 
     Only available with local engine (Qwen3-TTS).
     """
-    if not _has_local_voice():
-        logger.warning("Multi-voice requires local voice engine (octo-agent[voice])")
+    if not _has_local_tts():
+        logger.warning("Multi-voice requires local TTS engine (octo-agent[voice])")
         return None
 
     try:
