@@ -1,18 +1,40 @@
 """Local voice engine — in-process TTS/STT without HTTP overhead.
 
-Requires the [voice] optional extra: pip install octo-agent[voice]
+Requires one or both optional extras:
+  STT only: pip install faster-whisper  (or mlx-whisper on Apple Silicon)
+  TTS only: pip install parler_tts soundfile
+  Both:     pip install octo-agent[voice]
 """
 from __future__ import annotations
 
 
-def is_available() -> bool:
-    """Return True if local voice deps (parler_tts, soundfile) are importable."""
+def stt_available() -> bool:
+    """Return True if a local STT backend (faster-whisper or mlx-whisper) is importable."""
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    try:
+        import mlx_whisper  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def tts_available() -> bool:
+    """Return True if local TTS deps (parler_tts, soundfile) are importable."""
     try:
         import parler_tts  # noqa: F401
         import soundfile  # noqa: F401
         return True
     except ImportError:
         return False
+
+
+def is_available() -> bool:
+    """Return True if any local voice backend (STT or TTS) is importable."""
+    return stt_available() or tts_available()
 
 
 async def local_synthesize(

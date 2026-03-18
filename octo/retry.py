@@ -273,7 +273,7 @@ async def auto_compact(app: Any, config: dict) -> bool:
     returning 'model identifier is invalid' for both main and low-tier).
     """
     try:
-        from langchain_core.messages import RemoveMessage, SystemMessage
+        from langchain_core.messages import RemoveMessage
 
         state = await app.aget_state(config)
         messages = state.values.get("messages", [])
@@ -312,7 +312,8 @@ async def auto_compact(app: Any, config: dict) -> bool:
                 + "\n".join(summary_lines[-80:])
             )
             summary_response = await summary_model.ainvoke(summary_prompt)
-            summary_msg = SystemMessage(
+            from langchain_core.messages import AIMessage
+            summary_msg = AIMessage(
                 content=(
                     "[Conversation summary — earlier messages were auto-compacted]\n\n"
                     + summary_response.content
@@ -324,7 +325,8 @@ async def auto_compact(app: Any, config: dict) -> bool:
                 "Summary model failed, falling back to crude compaction",
                 exc_info=True,
             )
-            summary_msg = SystemMessage(
+            from langchain_core.messages import AIMessage
+            summary_msg = AIMessage(
                 content=(
                     "[Earlier conversation was auto-compacted (summary unavailable). "
                     f"{len(removable)} messages removed to reduce context size.]"

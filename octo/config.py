@@ -393,6 +393,53 @@ VOICE_MODEL_DIR = os.getenv("VOICE_MODEL_DIR", "")
 PROJECTS_DIR = OCTO_DIR / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
 
+# --- Per-user workspaces ---
+# Each authorized Telegram user gets an isolated directory under .octo/users/.
+# Layout:
+#   .octo/users/{telegram_user_id}/
+#     agents/           — Octo-native AGENT.md dirs (override or extend shared)
+#     projects/         — personal project JSON files
+#     memory/           — isolated long-term memory
+# Agents and projects here are merged on top of the shared globals.
+USERS_DIR = OCTO_DIR / "users"
+USERS_DIR.mkdir(exist_ok=True)
+
+
+def get_user_dir(user_id: str) -> Path:
+    """Return (and create) the workspace directory for a Telegram user."""
+    d = USERS_DIR / user_id
+    d.mkdir(exist_ok=True)
+    (d / "agents").mkdir(exist_ok=True)
+    (d / "projects").mkdir(exist_ok=True)
+    (d / "memory").mkdir(exist_ok=True)
+    return d
+
+
+def get_user_agents_dir(user_id: str) -> Path:
+    """Return the agents sub-directory for a Telegram user (creating it)."""
+    return get_user_dir(user_id) / "agents"
+
+
+def get_user_projects_dir(user_id: str) -> Path:
+    """Return the projects sub-directory for a Telegram user (creating it)."""
+    return get_user_dir(user_id) / "projects"
+
+
+def load_user_projects(user_id: str) -> dict[str, ProjectConfig]:
+    """Return merged projects: shared globals + user-specific overrides."""
+    user_projects_dir = get_user_projects_dir(user_id)
+    merged = dict(PROJECTS)  # start with shared
+    for f in sorted(user_projects_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+            proj = _project_from_dict(data)
+            if not proj.name:
+                proj.name = f.stem
+            merged[proj.name] = proj
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return merged
+
 
 # ProjectConfig, project_to_dict, project_from_dict imported from octo.core.constants
 # Backward-compat aliases for the underscore-prefixed names
