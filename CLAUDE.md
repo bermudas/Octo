@@ -10,9 +10,10 @@ Python 3.13, installed via `pip install -e .`, virtualenv at `.venv/`.
 - **Model factory**: `octo/models.py` (5 providers: anthropic, bedrock, openai, azure, github)
 - **Config**: `octo/config.py` (loads .env, all constants)
 - **UI**: `octo/ui.py` (Rich console — input, banners, panels, help)
-- **Telegram**: `octo/telegram.py` (bidirectional bot transport)
+- **Telegram**: `octo/telegram.py` (bidirectional bot transport, multi-tenant per-user isolation)
 - **Wizard**: `octo/wizard/` (onboarding, doctor, validators, templates)
 - **State dir**: `.octo/` (persona, agents, skills, memory, plans, workspace, sessions, cron, DB)
+- **User workspaces**: `.octo/users/{telegram_user_id}/` (per-user agents, projects, memory)
 
 ## Critical Conventions
 
@@ -56,6 +57,15 @@ Adding a new **built-in tool** requires:
 - Do NOT use `AsyncSqliteSaver.from_conn_string()` — it returns a context manager. Use `aiosqlite.connect()` + `AsyncSqliteSaver(conn)`.
 - Do NOT catch `asyncio.CancelledError` in loops — it must propagate for task cancellation to work.
 - Do NOT use `MultiServerMCPClient` as a context manager — just instantiate and call `get_tools()`.
+
+### Multi-Tenant Telegram (feat/multi-tenant-users)
+- **Per-user thread**: `TelegramTransport._user_thread_id(sender_id)` → `{base}:{sender_id}`; owner uses bare `thread_id`.
+- **Per-user graph**: `_get_or_build_user_graph(user_id)` — lazy compile, mtime-cached, falls back to shared graph.
+- **Reply routing**: `reply_chat_id` + `sender_id` passed via `configurable` so all async tools route back correctly.
+- **User workspace bootstrap**: called automatically on `/authorize`; layout: `.octo/users/{id}/agents|projects|memory/`.
+- **Layered agent loader**: `load_agents_for_user(user_id)` in `octo/core/loaders/agent_loader.py` — user wins on name collision.
+- **`load_user_projects(user_id)`** in `octo/config.py` — shared + personal merged.
+- Do NOT hardcode `TELEGRAM_OWNER_ID` as the notification target — use `config["configurable"]["reply_chat_id"]`.
 
 ## Testing
 - Syntax check: `.venv/bin/python -m py_compile octo/<file>.py`

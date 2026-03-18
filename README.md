@@ -119,14 +119,23 @@ Jobs stored in `.octo/cron.json`. Agents can self-schedule via the `schedule_tas
 
 ### Telegram Transport
 
-Full bidirectional Telegram bot that shares the same conversation thread as the CLI. Features:
+Full bidirectional Telegram bot with multi-tenant user isolation. Features:
 - Text and voice messages (transcription via Whisper, TTS via ElevenLabs)
 - Markdown-to-HTML conversion for rich formatting
 - User authorization (`/authorize`, `/revoke`)
+- **Per-user isolation** — each authorized user gets their own LangGraph checkpoint
+  thread, conversation history, and `/clear` scope (owner's CLI and Telegram remain
+  the same shared thread)
+- **Per-user workspaces** — `~/.octo/users/{telegram_user_id}/agents|projects|memory/`;
+  user agents override or extend the shared global set
+- **Correct async reply routing** — `reply_chat_id` flows through `configurable` so
+  `escalate_question`, background task results, and VP notifications go back to
+  the user who triggered them, not always the owner
 - Proactive message delivery (heartbeat + cron results)
 - File attachments — `send_file` tool sends research reports as Telegram documents
 - Reply routing — swipe-reply to VP or background task notifications to respond in-context
 - Shared `asyncio.Lock` prevents races between CLI, Telegram, heartbeat, and cron
+- Bot commands: `/myagents`, `/myprojects` (per-user view), `/users` (owner-only management)
 
 ### Context Window Management
 
